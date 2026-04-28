@@ -448,7 +448,11 @@ def main():
     sub = parser.add_subparsers(dest="cmd")
 
     p_folder = sub.add_parser("folder", help="Index all documents in a folder")
-    p_folder.add_argument("path", metavar="FOLDER", help="Path to folder")
+
+    p_folder.add_argument("path", metavar="FOLDER", nargs="?",
+                      default="/home/seb/GIT/RagMind/pdf",
+                      help="Path to folder (default: /home/seb/GIT/RagMind/pdf)")
+
     p_folder.add_argument("--recursive", "-r", action="store_true",
                           help="Also scan sub-folders")
 
