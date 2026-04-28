@@ -1,3 +1,4 @@
+# RagMind — Local RAG-powered Document Q&A CLI
 # rag_cli.py — Universal Document Q&A CLI
 # Copyright (C) 2026  Seb Szmytka
 #
