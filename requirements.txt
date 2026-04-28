@@ -1,0 +1,15 @@
+# RagMind — requirements.txt
+# Install with:  pip install -r requirements.txt
+
+# Core
+chromadb>=0.5.0
+pypdf>=4.0.0
+python-docx>=1.1.0
+
+# Optional — for EPUB and HTML support
+# pip install ebooklib beautifulsoup4
+
+# Ollama — install separately (not a Python package)
+# https://ollama.com/download
+# Then:  ollama pull llama3
+#        ollama pull nomic-embed-text
