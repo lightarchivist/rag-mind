@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RagMind</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0d0f12;
+    --surface:  #13161b;
+    --surface2: #1a1e25;
+    --border:   #252a33;
+    --accent:   #7ee8a2;
+    --accent2:  #38bdf8;
+    --muted:    #4a5568;
+    --text:     #e2e8f0;
+    --text2:    #94a3b8;
+    --danger:   #f87171;
+    --radius:   10px;
+    --mono:     'DM Mono', monospace;
+    --sans:     'Syne', sans-serif;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); }
+
+  /* ── Layout ── */
+  .app { display: grid; grid-template-columns: 300px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
+
+  /* ── Header ── */
+  header {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    z-index: 10;
+  }
+  .logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
+  .logo span { color: var(--accent); }
+  .logo-sub { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: 4px; }
+  .health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-left: auto; transition: background .3s; }
+  .health-dot.ok { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .health-label { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  /* ── Sidebar ── */
+  aside {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-section { padding: 16px; border-bottom: 1px solid var(--border); }
+  .sidebar-title {
+    font-family: var(--mono); font-size: 10px; font-weight: 500;
+    color: var(--muted); letter-spacing: 1.5px; text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  /* Upload zone */
+  .upload-zone {
+    border: 1.5px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    position: relative;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(126,232,162,.04); }
+  .upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+  .upload-icon { font-size: 24px; margin-bottom: 6px; }
+  .upload-text { font-size: 12px; color: var(--text2); line-height: 1.5; }
+  .upload-text strong { color: var(--accent); }
+
+  /* Progress */
+  .upload-progress { display: none; margin-top: 10px; }
+  .upload-progress.show { display: block; }
+  .progress-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width .3s; }
+  .progress-label { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+  /* Document list */
+  .doc-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .doc-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 8px;
+    transition: background .15s;
+    animation: slideIn .2s ease;
+  }
+  .doc-item:hover { background: var(--surface2); }
+  .doc-icon { font-size: 16px; flex-shrink: 0; }
+  .doc-info { flex: 1; min-width: 0; }
+  .doc-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .doc-chunks { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .doc-delete {
+    opacity: 0; background: none; border: none; color: var(--danger);
+    cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 4px;
+    transition: opacity .15s, background .15s;
+  }
+  .doc-item:hover .doc-delete { opacity: 1; }
+  .doc-delete:hover { background: rgba(248,113,113,.1); }
+  .empty-docs { padding: 20px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  /* ── Chat area ── */
+  main { display: flex; flex-direction: column; overflow: hidden; }
+
+  .messages { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+  .messages::-webkit-scrollbar { width: 4px; }
+  .messages::-webkit-scrollbar-track { background: transparent; }
+  .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Welcome */
+  .welcome {
+    margin: auto;
+    text-align: center;
+    max-width: 420px;
+    animation: fadeUp .4s ease;
+  }
+  .welcome-logo { font-size: 48px; font-weight: 800; letter-spacing: -2px; margin-bottom: 8px; }
+  .welcome-logo span { color: var(--accent); }
+  .welcome-sub { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 24px; }
+  .welcome-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .chip {
+    padding: 6px 14px; border-radius: 20px;
+    border: 1px solid var(--border); background: var(--surface);
+    font-size: 12px; color: var(--text2); cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Messages */
+  .msg { display: flex; gap: 12px; animation: fadeUp .2s ease; max-width: 780px; }
+  .msg.user { flex-direction: row-reverse; align-self: flex-end; }
+  .msg-avatar {
+    width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700;
+  }
+  .msg.user .msg-avatar { background: var(--accent2); color: #0d0f12; }
+  .msg.assistant .msg-avatar { background: var(--surface2); border: 1px solid var(--border); color: var(--accent); }
+  .msg-body { flex: 1; min-width: 0; }
+  .msg-bubble {
+    padding: 12px 16px; border-radius: 12px;
+    font-size: 14px; line-height: 1.7;
+  }
+  .msg.user .msg-bubble { background: var(--accent2); color: #0d0f12; border-radius: 12px 2px 12px 12px; }
+  .msg.assistant .msg-bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 2px 12px 12px 12px; }
+  .msg-sources { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .source-tag {
+    font-family: var(--mono); font-size: 10px; padding: 2px 8px;
+    background: rgba(126,232,162,.08); border: 1px solid rgba(126,232,162,.2);
+    color: var(--accent); border-radius: 4px;
+  }
+
+  /* Typing indicator */
+  .typing { display: flex; gap: 4px; align-items: center; padding: 12px 16px; }
+  .typing span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+    animation: bounce .8s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .3s; }
+
+  /* ── Input bar ── */
+  .input-bar {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .input-wrap {
+    display: flex; gap: 10px; align-items: flex-end;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 14px;
+    transition: border-color .2s;
+  }
+  .input-wrap:focus-within { border-color: var(--accent); }
+  textarea {
+    flex: 1; background: none; border: none; outline: none;
+    color: var(--text); font-family: var(--sans); font-size: 14px;
+    resize: none; line-height: 1.5; max-height: 120px;
+    scrollbar-width: none;
+  }
+  textarea::placeholder { color: var(--muted); }
+  .send-btn {
+    width: 36px; height: 36px; border-radius: 8px;
+    background: var(--accent); border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: opacity .15s, transform .1s;
+  }
+  .send-btn:hover { opacity: .85; }
+  .send-btn:active { transform: scale(.95); }
+  .send-btn:disabled { opacity: .3; cursor: not-allowed; }
+  .send-btn svg { width: 16px; height: 16px; fill: #0d0f12; }
+  .input-hint { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 6px; text-align: right; }
+
+  /* ── Animations ── */
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
+
+  /* Scrollbar */
+  .doc-list::-webkit-scrollbar { width: 3px; }
+  .doc-list::-webkit-scrollbar-thumb { background: var(--border); }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    padding: 10px 16px; border-radius: 8px;
+    font-family: var(--mono); font-size: 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    animation: fadeUp .2s ease;
+    z-index: 100;
+  }
+  .toast.success { border-color: var(--accent); color: var(--accent); }
+  .toast.error { border-color: var(--danger); color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">Rag<span>Mind</span> <span class="logo-sub">v1.0</span></div>
+    <span class="health-label" id="health-label">checking...</span>
+    <div class="health-dot" id="health-dot"></div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside>
+    <div class="sidebar-section">
+      <div class="sidebar-title">Upload Documents</div>
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="file-input" accept=".pdf,.epub,.docx,.txt,.md" multiple>
+        <div class="upload-icon">📚</div>
+        <div class="upload-text"><strong>Drop files here</strong><br>PDF · EPUB · DOCX · TXT · MD</div>
+      </div>
+      <div class="upload-progress" id="upload-progress">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="progress-label" id="progress-label">Uploading...</div>
+      </div>
+    </div>
+
+    <div class="sidebar-section" style="flex:1;display:flex;flex-direction:column;overflow:hidden;border:none;padding-bottom:0">
+      <div class="sidebar-title">Indexed Documents</div>
+      <div class="doc-list" id="doc-list">
+        <div class="empty-docs">No documents yet</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Chat -->
+  <main>
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-logo">Rag<span>Mind</span></div>
+        <div class="welcome-sub">// local RAG · no cloud · your data stays yours</div>
+        <div class="welcome-chips">
+          <div class="chip" onclick="sendChip(this)">What is this document about?</div>
+          <div class="chip" onclick="sendChip(this)">Summarise the key findings</div>
+          <div class="chip" onclick="sendChip(this)">What are the main arguments?</div>
+          <div class="chip" onclick="sendChip(this)">List the conclusions</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <div class="input-wrap">
+        <textarea id="input" placeholder="Ask anything about your documents…" rows="1"></textarea>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()">
+          <svg viewBox="0 0 24 24"><path d="M2 21L23 12 2 3v7l15 2-15 2v7z"/></svg>
+        </button>
+      </div>
+      <div class="input-hint">Enter to send · Shift+Enter for new line</div>
+    </div>
+  </main>
+</div>
+
+<script>
+const history = [];
+let streaming = false;
+
+// ── Health check ──────────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    const dot = document.getElementById('health-dot');
+    const lbl = document.getElementById('health-label');
+    if (d.ollama) {
+      dot.classList.add('ok');
+      lbl.textContent = d.model;
+    } else {
+      lbl.textContent = 'ollama offline';
+    }
+  } catch { document.getElementById('health-label').textContent = 'offline'; }
+}
+
+// ── Documents ─────────────────────────────────────────────────────────────────
+function fileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  return {pdf:'📄', epub:'📚', docx:'📝', txt:'📃', md:'📋'}[ext] || '📄';
+}
+
+async function loadDocs() {
+  const r = await fetch('/documents');
+  const d = await r.json();
+  const list = document.getElementById('doc-list');
+  if (!d.documents.length) {
+    list.innerHTML = '<div class="empty-docs">No documents yet</div>';
+    return;
+  }
+  list.innerHTML = d.documents.map(doc => `
+    <div class="doc-item" id="doc-${btoa(doc.name)}">
+      <div class="doc-icon">${fileIcon(doc.name)}</div>
+      <div class="doc-info">
+        <div class="doc-name" title="${doc.name}">${doc.name}</div>
+        <div class="doc-chunks">${doc.chunks} chunks</div>
+      </div>
+      <button class="doc-delete" onclick="deleteDoc('${doc.name}')" title="Remove">✕</button>
+    </div>`).join('');
+}
+
+async function deleteDoc(name) {
+  if (!confirm(`Remove "${name}" from index?`)) return;
+  await fetch(`/documents/${encodeURIComponent(name)}`, {method:'DELETE'});
+  toast(`Removed ${name}`, 'success');
+  loadDocs();
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────────
+const zone = document.getElementById('upload-zone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('drag'); handleFiles(e.dataTransfer.files); });
+document.getElementById('file-input').addEventListener('change', e => handleFiles(e.target.files));
+
+async function handleFiles(files) {
+  const prog = document.getElementById('upload-progress');
+  const fill = document.getElementById('progress-fill');
+  const lbl  = document.getElementById('progress-label');
+  prog.classList.add('show');
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    lbl.textContent = `Indexing ${file.name}…`;
+    fill.style.width = '30%';
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/upload', {method:'POST', body: fd});
+      const d = await r.json();
+      fill.style.width = `${Math.round((i+1)/files.length*100)}%`;
+      if (d.status === 'skipped') {
+        toast(`${file.name} already indexed`, 'success');
+      } else {
+        toast(`${file.name} — ${d.chunks} chunks indexed`, 'success');
+      }
+    } catch(e) {
+      toast(`Error: ${file.name}`, 'error');
+    }
+  }
+  setTimeout(() => { prog.classList.remove('show'); fill.style.width = '0'; }, 800);
+  loadDocs();
+  document.getElementById('file-input').value = '';
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────────
+function hideWelcome() {
+  const w = document.getElementById('welcome');
+  if (w) w.remove();
+}
+
+function addMessage(role, content, sources) {
+  hideWelcome();
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  const initial = role === 'user' ? 'U' : '✦';
+  div.innerHTML = `
+    <div class="msg-avatar">${initial}</div>
+    <div class="msg-body">
+      <div class="msg-bubble" id="bubble-${Date.now()}">${content}</div>
+      ${sources ? `<div class="msg-sources">${sources.map(s=>`<span class="source-tag">📄 ${s}</span>`).join('')}</div>` : ''}
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div.querySelector('.msg-bubble');
+}
+
+function addTyping() {
+  hideWelcome();
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'msg assistant'; div.id = 'typing-msg';
+  div.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-body"><div class="msg-bubble"><div class="typing"><span></span><span></span><span></span></div></div></div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+async function sendMessage() {
+  if (streaming) return;
+  const input = document.getElementById('input');
+  const question = input.value.trim();
+  if (!question) return;
+
+  input.value = ''; input.style.height = 'auto';
+  addMessage('user', question);
+  document.getElementById('send-btn').disabled = true;
+  streaming = true;
+
+  const typingEl = addTyping();
+  let answer = '';
+  let sources = [];
+  let firstChunk = true;
+  let bubble = null;
+  const sourceDiv = document.createElement('div');
+  sourceDiv.className = 'msg-sources';
+
+  try {
+    const resp = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({question, history: history.slice(-4)})
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value);
+
+      // first line may be JSON with sources
+      if (firstChunk && text.startsWith('{')) {
+        try {
+          const meta = JSON.parse(text.split('\n')[0]);
+          sources = meta.sources || [];
+        } catch {}
+        firstChunk = false;
+        typingEl.remove();
+        // create real bubble
+        const msgs = document.getElementById('messages');
+        const div = document.createElement('div');
+        div.className = 'msg assistant';
+        div.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-body"><div class="msg-bubble"></div></div>`;
+        msgs.appendChild(div);
+        bubble = div.querySelector('.msg-bubble');
+        div.querySelector('.msg-body').appendChild(sourceDiv);
+        msgs.scrollTop = msgs.scrollHeight;
+        continue;
+      }
+
+      if (bubble) {
+        answer += text;
+        bubble.textContent = answer;
+        const msgs = document.getElementById('messages');
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+    }
+
+    // show sources
+    if (sources.length) {
+      sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${s}</span>`).join('');
+    }
+
+    history.push({q: question, a: answer});
+  } catch(e) {
+    typingEl?.remove();
+    addMessage('assistant', 'Connection error. Is Ollama running?');
+  }
+
+  streaming = false;
+  document.getElementById('send-btn').disabled = false;
+}
+
+function sendChip(el) {
+  document.getElementById('input').value = el.textContent;
+  sendMessage();
+}
+
+// ── Input auto-resize + enter key ─────────────────────────────────────────────
+const textarea = document.getElementById('input');
+textarea.addEventListener('input', () => {
+  textarea.style.height = 'auto';
+  textarea.style.height = textarea.scrollHeight + 'px';
+});
+textarea.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, type='success') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+checkHealth();
+setInterval(checkHealth, 30000);
+loadDocs();
+</script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RagMind</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0d0f12;
+    --surface:  #13161b;
+    --surface2: #1a1e25;
+    --border:   #252a33;
+    --accent:   #7ee8a2;
+    --accent2:  #38bdf8;
+    --muted:    #4a5568;
+    --text:     #e2e8f0;
+    --text2:    #94a3b8;
+    --danger:   #f87171;
+    --radius:   10px;
+    --mono:     'DM Mono', monospace;
+    --sans:     'Syne', sans-serif;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); }
+
+  /* ── Layout ── */
+  .app { display: grid; grid-template-columns: 300px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
+
+  /* ── Header ── */
+  header {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    z-index: 10;
+  }
+  .logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
+  .logo span { color: var(--accent); }
+  .logo-sub { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: 4px; }
+  .health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-left: auto; transition: background .3s; }
+  .health-dot.ok { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .health-label { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  /* ── Sidebar ── */
+  aside {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-section { padding: 16px; border-bottom: 1px solid var(--border); }
+  .sidebar-title {
+    font-family: var(--mono); font-size: 10px; font-weight: 500;
+    color: var(--muted); letter-spacing: 1.5px; text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  /* Upload zone */
+  .upload-zone {
+    border: 1.5px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    position: relative;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(126,232,162,.04); }
+  .upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+  .upload-icon { font-size: 24px; margin-bottom: 6px; }
+  .upload-text { font-size: 12px; color: var(--text2); line-height: 1.5; }
+  .upload-text strong { color: var(--accent); }
+
+  /* Progress */
+  .upload-progress { display: none; margin-top: 10px; }
+  .upload-progress.show { display: block; }
+  .progress-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width .3s; }
+  .progress-label { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+  /* Document list */
+  .doc-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .doc-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 8px;
+    transition: background .15s;
+    animation: slideIn .2s ease;
+  }
+  .doc-item:hover { background: var(--surface2); }
+  .doc-icon { font-size: 16px; flex-shrink: 0; }
+  .doc-info { flex: 1; min-width: 0; }
+  .doc-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .doc-chunks { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .doc-delete {
+    opacity: 0; background: none; border: none; color: var(--danger);
+    cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 4px;
+    transition: opacity .15s, background .15s;
+  }
+  .doc-item:hover .doc-delete { opacity: 1; }
+  .doc-delete:hover { background: rgba(248,113,113,.1); }
+  .empty-docs { padding: 20px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  /* ── Chat area ── */
+  main { display: flex; flex-direction: column; overflow: hidden; }
+
+  .messages { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+  .messages::-webkit-scrollbar { width: 4px; }
+  .messages::-webkit-scrollbar-track { background: transparent; }
+  .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Welcome */
+  .welcome {
+    margin: auto;
+    text-align: center;
+    max-width: 420px;
+    animation: fadeUp .4s ease;
+  }
+  .welcome-logo { font-size: 48px; font-weight: 800; letter-spacing: -2px; margin-bottom: 8px; }
+  .welcome-logo span { color: var(--accent); }
+  .welcome-sub { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 24px; }
+  .welcome-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .chip {
+    padding: 6px 14px; border-radius: 20px;
+    border: 1px solid var(--border); background: var(--surface);
+    font-size: 12px; color: var(--text2); cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Messages */
+  .msg { display: flex; gap: 12px; animation: fadeUp .2s ease; max-width: 780px; }
+  .msg.user { flex-direction: row-reverse; align-self: flex-end; }
+  .msg-avatar {
+    width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700;
+  }
+  .msg.user .msg-avatar { background: var(--accent2); color: #0d0f12; }
+  .msg.assistant .msg-avatar { background: var(--surface2); border: 1px solid var(--border); color: var(--accent); }
+  .msg-body { flex: 1; min-width: 0; }
+  .msg-bubble {
+    padding: 12px 16px; border-radius: 12px;
+    font-size: 14px; line-height: 1.7;
+  }
+  .msg.user .msg-bubble { background: var(--accent2); color: #0d0f12; border-radius: 12px 2px 12px 12px; }
+  .msg.assistant .msg-bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 2px 12px 12px 12px; }
+  .msg-sources { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .source-tag {
+    font-family: var(--mono); font-size: 10px; padding: 2px 8px;
+    background: rgba(126,232,162,.08); border: 1px solid rgba(126,232,162,.2);
+    color: var(--accent); border-radius: 4px;
+  }
+
+  /* Typing indicator */
+  .typing { display: flex; gap: 4px; align-items: center; padding: 12px 16px; }
+  .typing span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+    animation: bounce .8s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .3s; }
+
+  /* ── Input bar ── */
+  .input-bar {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .input-wrap {
+    display: flex; gap: 10px; align-items: flex-end;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 14px;
+    transition: border-color .2s;
+  }
+  .input-wrap:focus-within { border-color: var(--accent); }
+  textarea {
+    flex: 1; background: none; border: none; outline: none;
+    color: var(--text); font-family: var(--sans); font-size: 14px;
+    resize: none; line-height: 1.5; max-height: 120px;
+    scrollbar-width: none;
+  }
+  textarea::placeholder { color: var(--muted); }
+  .send-btn {
+    width: 36px; height: 36px; border-radius: 8px;
+    background: var(--accent); border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: opacity .15s, transform .1s;
+  }
+  .send-btn:hover { opacity: .85; }
+  .send-btn:active { transform: scale(.95); }
+  .send-btn:disabled { opacity: .3; cursor: not-allowed; }
+  .send-btn svg { width: 16px; height: 16px; fill: #0d0f12; }
+  .input-hint { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 6px; text-align: right; }
+
+  /* ── Animations ── */
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
+
+  /* Scrollbar */
+  .doc-list::-webkit-scrollbar { width: 3px; }
+  .doc-list::-webkit-scrollbar-thumb { background: var(--border); }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    padding: 10px 16px; border-radius: 8px;
+    font-family: var(--mono); font-size: 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    animation: fadeUp .2s ease;
+    z-index: 100;
+  }
+  .toast.success { border-color: var(--accent); color: var(--accent); }
+  .toast.error { border-color: var(--danger); color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">Rag<span>Mind</span> <span class="logo-sub">v1.0</span></div>
+    <span class="health-label" id="health-label">checking...</span>
+    <div class="health-dot" id="health-dot"></div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside>
+    <div class="sidebar-section">
+      <div class="sidebar-title">Upload Documents</div>
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="file-input" accept=".pdf,.epub,.docx,.txt,.md" multiple>
+        <div class="upload-icon">📚</div>
+        <div class="upload-text"><strong>Drop files here</strong><br>PDF · EPUB · DOCX · TXT · MD</div>
+      </div>
+      <div class="upload-progress" id="upload-progress">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="progress-label" id="progress-label">Uploading...</div>
+      </div>
+    </div>
+
+    <div class="sidebar-section" style="flex:1;display:flex;flex-direction:column;overflow:hidden;border:none;padding-bottom:0">
+      <div class="sidebar-title">Indexed Documents</div>
+      <div class="doc-list" id="doc-list">
+        <div class="empty-docs">No documents yet</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Chat -->
+  <main>
+    <div class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-logo">Rag<span>Mind</span></div>
+        <div class="welcome-sub">// local RAG · no cloud · your data stays yours</div>
+        <div class="welcome-chips">
+          <div class="chip" onclick="sendChip(this)">What is this document about?</div>
+          <div class="chip" onclick="sendChip(this)">Summarise the key findings</div>
+          <div class="chip" onclick="sendChip(this)">What are the main arguments?</div>
+          <div class="chip" onclick="sendChip(this)">List the conclusions</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <div class="input-wrap">
+        <textarea id="input" placeholder="Ask anything about your documents…" rows="1"></textarea>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()">
+          <svg viewBox="0 0 24 24"><path d="M2 21L23 12 2 3v7l15 2-15 2v7z"/></svg>
+        </button>
+      </div>
+      <div class="input-hint">Enter to send · Shift+Enter for new line</div>
+    </div>
+  </main>
+</div>
+
+<script>
+const history = [];
+let streaming = false;
+
+// ── Health check ──────────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    const dot = document.getElementById('health-dot');
+    const lbl = document.getElementById('health-label');
+    if (d.ollama) {
+      dot.classList.add('ok');
+      lbl.textContent = d.model;
+    } else {
+      lbl.textContent = 'ollama offline';
+    }
+  } catch { document.getElementById('health-label').textContent = 'offline'; }
+}
+
+// ── Documents ─────────────────────────────────────────────────────────────────
+function fileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  return {pdf:'📄', epub:'📚', docx:'📝', txt:'📃', md:'📋'}[ext] || '📄';
+}
+
+async function loadDocs() {
+  const r = await fetch('/documents');
+  const d = await r.json();
+  const list = document.getElementById('doc-list');
+  if (!d.documents.length) {
+    list.innerHTML = '<div class="empty-docs">No documents yet</div>';
+    return;
+  }
+  list.innerHTML = d.documents.map(doc => `
+    <div class="doc-item" id="doc-${btoa(doc.name)}">
+      <div class="doc-icon">${fileIcon(doc.name)}</div>
+      <div class="doc-info">
+        <div class="doc-name" title="${doc.name}">${doc.name}</div>
+        <div class="doc-chunks">${doc.chunks} chunks</div>
+      </div>
+      <button class="doc-delete" onclick="deleteDoc('${doc.name}')" title="Remove">✕</button>
+    </div>`).join('');
+}
+
+async function deleteDoc(name) {
+  if (!confirm(`Remove "${name}" from index?`)) return;
+  await fetch(`/documents/${encodeURIComponent(name)}`, {method:'DELETE'});
+  toast(`Removed ${name}`, 'success');
+  loadDocs();
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────────
+const zone = document.getElementById('upload-zone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('drag'); handleFiles(e.dataTransfer.files); });
+document.getElementById('file-input').addEventListener('change', e => handleFiles(e.target.files));
+
+async function handleFiles(files) {
+  const prog = document.getElementById('upload-progress');
+  const fill = document.getElementById('progress-fill');
+  const lbl  = document.getElementById('progress-label');
+  prog.classList.add('show');
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    lbl.textContent = `Indexing ${file.name}…`;
+    fill.style.width = '30%';
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/upload', {method:'POST', body: fd});
+      const d = await r.json();
+      fill.style.width = `${Math.round((i+1)/files.length*100)}%`;
+      if (d.status === 'skipped') {
+        toast(`${file.name} already indexed`, 'success');
+      } else {
+        toast(`${file.name} — ${d.chunks} chunks indexed`, 'success');
+      }
+    } catch(e) {
+      toast(`Error: ${file.name}`, 'error');
+    }
+  }
+  setTimeout(() => { prog.classList.remove('show'); fill.style.width = '0'; }, 800);
+  loadDocs();
+  document.getElementById('file-input').value = '';
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────────
+function hideWelcome() {
+  const w = document.getElementById('welcome');
+  if (w) w.remove();
+}
+
+function addMessage(role, content, sources) {
+  hideWelcome();
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  const initial = role === 'user' ? 'U' : '✦';
+  div.innerHTML = `
+    <div class="msg-avatar">${initial}</div>
+    <div class="msg-body">
+      <div class="msg-bubble" id="bubble-${Date.now()}">${content}</div>
+      ${sources ? `<div class="msg-sources">${sources.map(s=>`<span class="source-tag">📄 ${s}</span>`).join('')}</div>` : ''}
+    </div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div.querySelector('.msg-bubble');
+}
+
+function addTyping() {
+  hideWelcome();
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'msg assistant'; div.id = 'typing-msg';
+  div.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-body"><div class="msg-bubble"><div class="typing"><span></span><span></span><span></span></div></div></div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+async function sendMessage() {
+  if (streaming) return;
+  const input = document.getElementById('input');
+  const question = input.value.trim();
+  if (!question) return;
+
+  input.value = ''; input.style.height = 'auto';
+  addMessage('user', question);
+  document.getElementById('send-btn').disabled = true;
+  streaming = true;
+
+  const typingEl = addTyping();
+  let answer = '';
+  let sources = [];
+  let firstChunk = true;
+  let bubble = null;
+  const sourceDiv = document.createElement('div');
+  sourceDiv.className = 'msg-sources';
+
+  try {
+    const resp = await fetch('/chat/stream', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({question, history: history.slice(-4)})
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value);
+
+      // first line may be JSON with sources
+      if (firstChunk && text.startsWith('{')) {
+        try {
+          const meta = JSON.parse(text.split('\n')[0]);
+          sources = meta.sources || [];
+        } catch {}
+        firstChunk = false;
+        typingEl.remove();
+        // create real bubble
+        const msgs = document.getElementById('messages');
+        const div = document.createElement('div');
+        div.className = 'msg assistant';
+        div.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-body"><div class="msg-bubble"></div></div>`;
+        msgs.appendChild(div);
+        bubble = div.querySelector('.msg-bubble');
+        div.querySelector('.msg-body').appendChild(sourceDiv);
+        msgs.scrollTop = msgs.scrollHeight;
+        continue;
+      }
+
+      if (bubble) {
+        answer += text;
+        bubble.textContent = answer;
+        const msgs = document.getElementById('messages');
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+    }
+
+    // show sources
+    if (sources.length) {
+      sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${s}</span>`).join('');
+    }
+
+    history.push({q: question, a: answer});
+  } catch(e) {
+    typingEl?.remove();
+    addMessage('assistant', 'Connection error. Is Ollama running?');
+  }
+
+  streaming = false;
+  document.getElementById('send-btn').disabled = false;
+}
+
+function sendChip(el) {
+  document.getElementById('input').value = el.textContent;
+  sendMessage();
+}
+
+// ── Input auto-resize + enter key ─────────────────────────────────────────────
+const textarea = document.getElementById('input');
+textarea.addEventListener('input', () => {
+  textarea.style.height = 'auto';
+  textarea.style.height = textarea.scrollHeight + 'px';
+});
+textarea.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, type='success') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+checkHealth();
+setInterval(checkHealth, 30000);
+loadDocs();
+</script>
+</body>
+</html>
