@@ -1,3 +1,15 @@
+# Ebooks and documents
+pdf/
+
+# RAG vector database
+~/.rag_cli_db/
+
+# Python cache
+__pycache__/
+*.pyc
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
