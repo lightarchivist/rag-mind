@@ -94,7 +94,12 @@ def _post(endpoint, payload):
         raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {e}")
 
 def embed(text):
-    resp = _post("/api/embeddings", {"model": EMBED_MODEL, "prompt": text})
+    data = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_BASE}/api/embeddings", data=data,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        resp = json.loads(r.read())
     return resp["embedding"]
 
 async def stream_ollama(prompt: str) -> AsyncGenerator[str, None]:
@@ -152,15 +157,20 @@ def chunk_text(text, source):
     chunks, start, idx = [], 0, 0
     while start < len(text):
         end = min(start + CHUNK_SIZE, len(text))
-        for sep in (". ", "? ", "! ", "\n\n"):
-            pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
-            if pos != -1:
-                end = pos + len(sep); break
+        if end < len(text):
+            for sep in (". ", "? ", "! ", "\n\n"):
+                pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
+                if pos != -1:
+                    end = pos + len(sep)
+                    break
         chunk = text[start:end].strip()
         if chunk:
             chunks.append({"text": chunk, "source": os.path.basename(source), "chunk_id": idx})
             idx += 1
-        start = end - CHUNK_OVERLAP
+        next_start = end - CHUNK_OVERLAP
+        if next_start <= start:  # prevent infinite loop
+            next_start = start + CHUNK_SIZE
+        start = next_start
     return chunks
 
 # ─── Background indexing ──────────────────────────────────────────────────────
@@ -168,23 +178,32 @@ def index_file_background(path: str):
     filename = os.path.basename(path)
     try:
         indexing_status[filename] = {"status": "indexing", "progress": 0, "chunks": 0}
+        print(f"DEBUG: Starting indexing {filename}", flush=True)
 
         text = extract_text(path)
+        print(f"DEBUG: Extracted {len(text)} chars", flush=True)
+
         if not text.strip():
             indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": "Empty file"}
             return
 
+        print(f"DEBUG: Checking index lock...", flush=True)
         with index_lock:
+            print(f"DEBUG: Inside lock, loading index...", flush=True)
             idx = load_index()
+            print(f"DEBUG: Index loaded, checking sources...", flush=True)
             if filename in idx.sources():
                 indexing_status[filename] = {"status": "done", "progress": 100, "chunks": idx.sources()[filename]}
                 return
 
+        print(f"DEBUG: Chunking text...", flush=True)
         chunks = chunk_text(text, path)
+        print(f"DEBUG: Got {len(chunks)} chunks", flush=True)
         total = len(chunks)
         batch_emb, batch_doc, batch_meta = [], [], []
 
         for i, ch in enumerate(chunks):
+            print(f"DEBUG: Embedding chunk {i}/{total}", flush=True)
             batch_emb.append(embed(ch["text"]))
             batch_doc.append(ch["text"])
             batch_meta.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
@@ -207,8 +226,10 @@ def index_file_background(path: str):
                 save_index(idx)
 
         indexing_status[filename] = {"status": "done", "progress": 100, "chunks": total}
+        print(f"DEBUG: Done indexing {filename} — {total} chunks", flush=True)
 
     except Exception as e:
+        print(f"DEBUG: ERROR — {e}", flush=True)
         indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": str(e)}
 
 # ─── FastAPI ──────────────────────────────────────────────────────────────────
@@ -351,8 +372,10 @@ async def chat_stream(req: ChatRequest):
 @app.get("/health")
 async def health():
     try:
-        _post("/api/tags", {})
-        ollama_ok = True
+        import urllib.request
+        req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            ollama_ok = r.status == 200
     except:
         ollama_ok = False
     return {"ollama": ollama_ok, "model": LLM_MODEL}
