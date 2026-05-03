@@ -230,3 +230,5 @@ __marimo__/
 .streamlit/secrets.toml
 venv/
 .DS_Store
+ragmind-data/
+*/uploads/
