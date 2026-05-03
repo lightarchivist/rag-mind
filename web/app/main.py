@@ -1,14 +1,14 @@
 """
 RAG-MIND Web — FastAPI backend
 Lightweight RAG using numpy, no ChromaDB.
-Batched indexing to prevent memory spikes.
+Background indexing with progress tracking.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-import os, json, hashlib, shutil, pickle, time
+import os, json, hashlib, shutil, pickle, time, threading
 from typing import AsyncGenerator
 import numpy as np
 
@@ -18,15 +18,20 @@ EMBED_MODEL   = os.getenv("EMBED_MODEL", "nomic-embed-text")
 DATA_DIR      = os.getenv("DATA_DIR",    "/data")
 UPLOAD_DIR    = os.path.join(DATA_DIR, "uploads")
 INDEX_FILE    = os.path.join(DATA_DIR, "index.pkl")
+STATIC_DIR    = os.path.join(os.path.dirname(__file__), "static")
 CHUNK_SIZE    = 500
 CHUNK_OVERLAP = 80
 TOP_K         = 6
-BATCH_SIZE    = 10   # embed this many chunks at a time
+BATCH_SIZE    = 10
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR,   exist_ok=True)
 
 import urllib.request, urllib.error
+
+# ─── Indexing progress tracker ────────────────────────────────────────────────
+indexing_status = {}  # filename -> {"status": "indexing|done|error", "progress": 0-100, "chunks": 0}
+index_lock = threading.Lock()
 
 # ─── Simple numpy vector index ────────────────────────────────────────────────
 class VectorIndex:
@@ -158,41 +163,53 @@ def chunk_text(text, source):
         start = end - CHUNK_OVERLAP
     return chunks
 
-# ─── Indexing (batched) ───────────────────────────────────────────────────────
-def index_file(path):
-    text = extract_text(path)
-    if not text.strip():
-        raise ValueError("Empty or unreadable file")
+# ─── Background indexing ──────────────────────────────────────────────────────
+def index_file_background(path: str):
+    filename = os.path.basename(path)
+    try:
+        indexing_status[filename] = {"status": "indexing", "progress": 0, "chunks": 0}
 
-    idx = load_index()
-    src = os.path.basename(path)
+        text = extract_text(path)
+        if not text.strip():
+            indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": "Empty file"}
+            return
 
-    # check already indexed
-    if src in idx.sources():
-        return {"status": "already_indexed", "chunks": idx.sources()[src]}
+        with index_lock:
+            idx = load_index()
+            if filename in idx.sources():
+                indexing_status[filename] = {"status": "done", "progress": 100, "chunks": idx.sources()[filename]}
+                return
 
-    chunks = chunk_text(text, path)
-    total = len(chunks)
-    batch_emb, batch_doc, batch_meta = [], [], []
+        chunks = chunk_text(text, path)
+        total = len(chunks)
+        batch_emb, batch_doc, batch_meta = [], [], []
 
-    for i, ch in enumerate(chunks):
-        batch_emb.append(embed(ch["text"]))
-        batch_doc.append(ch["text"])
-        batch_meta.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
+        for i, ch in enumerate(chunks):
+            batch_emb.append(embed(ch["text"]))
+            batch_doc.append(ch["text"])
+            batch_meta.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
 
-        # save every BATCH_SIZE chunks
-        if (i + 1) % BATCH_SIZE == 0:
-            idx.add(batch_emb, batch_doc, batch_meta)
-            save_index(idx)
-            batch_emb, batch_doc, batch_meta = [], [], []
-            time.sleep(0.05)  # small pause between batches
+            progress = int((i + 1) / total * 100)
+            indexing_status[filename] = {"status": "indexing", "progress": progress, "chunks": i + 1}
 
-    # save any remaining chunks
-    if batch_emb:
-        idx.add(batch_emb, batch_doc, batch_meta)
-        save_index(idx)
+            if (i + 1) % BATCH_SIZE == 0:
+                with index_lock:
+                    idx = load_index()
+                    idx.add(batch_emb, batch_doc, batch_meta)
+                    save_index(idx)
+                batch_emb, batch_doc, batch_meta = [], [], []
+                time.sleep(0.05)
 
-    return {"status": "indexed", "chunks": total}
+        if batch_emb:
+            with index_lock:
+                idx = load_index()
+                idx.add(batch_emb, batch_doc, batch_meta)
+                save_index(idx)
+
+        indexing_status[filename] = {"status": "done", "progress": 100, "chunks": total}
+
+    except Exception as e:
+        indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": str(e)}
 
 # ─── FastAPI ──────────────────────────────────────────────────────────────────
 app = FastAPI(title="RAG-MIND", version="1.0")
@@ -211,10 +228,10 @@ class ChatRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    with open(os.path.join(os.path.dirname(__file__), "static", "index.html")) as f:
+    with open(os.path.join(STATIC_DIR, "index.html")) as f:
         return f.read()
 
-# ── Upload file (store only, no indexing) ─────────────────────────────────────
+# ── Upload file ───────────────────────────────────────────────────────────────
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     allowed = {".pdf", ".epub", ".docx", ".txt", ".md"}
@@ -230,47 +247,58 @@ async def upload_file(file: UploadFile = File(...)):
 # ── List uploaded files ───────────────────────────────────────────────────────
 @app.get("/files")
 async def list_files():
-    idx = load_index()
+    with index_lock:
+        idx = load_index()
     indexed = idx.sources()
     files = []
     for fname in sorted(os.listdir(UPLOAD_DIR)):
         fpath = os.path.join(UPLOAD_DIR, fname)
         if os.path.isfile(fpath):
+            status = indexing_status.get(fname, {})
             files.append({
                 "name": fname,
                 "size": os.path.getsize(fpath),
                 "indexed": fname in indexed,
                 "chunks": indexed.get(fname, 0),
+                "indexing_status": status.get("status", "idle"),
+                "indexing_progress": status.get("progress", 0),
             })
     return {"files": files}
 
-# ── Index a specific uploaded file ────────────────────────────────────────────
+# ── Start indexing in background ──────────────────────────────────────────────
 @app.post("/index/{filename}")
-async def index_document(filename: str):
+async def index_document(filename: str, background_tasks: BackgroundTasks):
     fpath = os.path.join(UPLOAD_DIR, filename)
     if not os.path.exists(fpath):
         raise HTTPException(404, f"File not found: {filename}")
-    try:
-        result = index_file(fpath)
-        return {"filename": filename, **result}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    if indexing_status.get(filename, {}).get("status") == "indexing":
+        return {"filename": filename, "status": "already_indexing"}
+    background_tasks.add_task(index_file_background, fpath)
+    return {"filename": filename, "status": "started"}
+
+# ── Indexing progress ─────────────────────────────────────────────────────────
+@app.get("/index/status/{filename}")
+async def index_status(filename: str):
+    status = indexing_status.get(filename, {"status": "idle", "progress": 0, "chunks": 0})
+    return {"filename": filename, **status}
 
 # ── List indexed documents ────────────────────────────────────────────────────
 @app.get("/documents")
 async def list_documents():
-    idx = load_index()
+    with index_lock:
+        idx = load_index()
     sources = idx.sources()
     return {"documents": [{"name": k, "chunks": v} for k, v in sorted(sources.items())]}
 
-# ── Remove from index (keeps file) ───────────────────────────────────────────
+# ── Remove from index ─────────────────────────────────────────────────────────
 @app.delete("/documents/{filename}")
 async def delete_document(filename: str):
-    idx = load_index()
-    if filename not in idx.sources():
-        raise HTTPException(404, "Document not found in index")
-    idx.delete_source(filename)
-    save_index(idx)
+    with index_lock:
+        idx = load_index()
+        if filename not in idx.sources():
+            raise HTTPException(404, "Document not found in index")
+        idx.delete_source(filename)
+        save_index(idx)
     return {"deleted": filename}
 
 # ── Delete file entirely ──────────────────────────────────────────────────────
@@ -279,17 +307,20 @@ async def delete_file(filename: str):
     fpath = os.path.join(UPLOAD_DIR, filename)
     if not os.path.exists(fpath):
         raise HTTPException(404, "File not found")
-    idx = load_index()
-    if filename in idx.sources():
-        idx.delete_source(filename)
-        save_index(idx)
+    with index_lock:
+        idx = load_index()
+        if filename in idx.sources():
+            idx.delete_source(filename)
+            save_index(idx)
     os.remove(fpath)
+    indexing_status.pop(filename, None)
     return {"deleted": filename}
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
-    idx = load_index()
+    with index_lock:
+        idx = load_index()
     if not idx.embeddings:
         async def no_docs():
             yield "No documents indexed yet. Upload a file and click Index."
@@ -326,4 +357,4 @@ async def health():
         ollama_ok = False
     return {"ollama": ollama_ok, "model": LLM_MODEL}
 
-app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

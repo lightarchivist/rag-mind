@@ -414,22 +414,40 @@ async function loadLibrary() {
 
 async function indexFile(name, btn) {
   btn.disabled = true;
-  btn.textContent = '…';
+  btn.textContent = '0%';
   toast(`Indexing ${name}…`, 'info');
   try {
     const r = await fetch(`/index/${encodeURIComponent(name)}`, {method:'POST'});
     const d = await r.json();
-    if (d.status === 'already_indexed') {
-      toast(`${name} already indexed`, 'info');
-    } else {
-      toast(`${name} — ${d.chunks} chunks indexed ✓`, 'success');
+    if (d.status === 'already_indexing') {
+      toast(`${name} already indexing`, 'info');
+      return;
     }
+    // poll progress
+    const poll = setInterval(async () => {
+      try {
+        const sr = await fetch(`/index/status/${encodeURIComponent(name)}`);
+        const sd = await sr.json();
+        btn.textContent = `${sd.progress}%`;
+        if (sd.status === 'done') {
+          clearInterval(poll);
+          btn.textContent = '✓';
+          toast(`${name} — ${sd.chunks} chunks indexed ✓`, 'success');
+          updateBadges();
+          loadLibrary();
+          if (currentPanel === 'indexed') loadIndexed();
+        } else if (sd.status === 'error') {
+          clearInterval(poll);
+          btn.textContent = '!';
+          toast(`Error: ${sd.error}`, 'error');
+        }
+      } catch {}
+    }, 1500);
   } catch(e) {
     toast(`Error indexing ${name}`, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Index';
   }
-  updateBadges();
-  loadLibrary();
-  if (currentPanel === 'indexed') loadIndexed();
 }
 
 async function deleteFile(name) {
