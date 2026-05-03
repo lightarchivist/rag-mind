@@ -1,14 +1,14 @@
 """
 RAG-MIND Web — FastAPI backend
 Lightweight RAG using numpy, no ChromaDB.
-Background indexing with progress tracking.
+Background indexing with progress tracking and gc.
 """
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-import os, json, hashlib, shutil, pickle, time, threading
+import os, json, shutil, pickle, time, threading, gc
 from typing import AsyncGenerator
 import numpy as np
 
@@ -30,7 +30,7 @@ os.makedirs(DATA_DIR,   exist_ok=True)
 import urllib.request, urllib.error
 
 # ─── Indexing progress tracker ────────────────────────────────────────────────
-indexing_status = {}  # filename -> {"status": "indexing|done|error", "progress": 0-100, "chunks": 0}
+indexing_status = {}
 index_lock = threading.Lock()
 
 # ─── Simple numpy vector index ────────────────────────────────────────────────
@@ -49,7 +49,6 @@ class VectorIndex:
         if not self.embeddings:
             return []
         q = np.array(query_embedding)
-        # filter by source if specified
         if source_filter:
             indices = [i for i, m in enumerate(self.metadatas) if m["source"] == source_filter]
             if not indices:
@@ -108,7 +107,12 @@ def _post(endpoint, payload):
         raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {e}")
 
 def embed(text):
-    resp = _post("/api/embeddings", {"model": EMBED_MODEL, "prompt": text})
+    data = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_BASE}/api/embeddings", data=data,
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        resp = json.loads(r.read())
     return resp["embedding"]
 
 async def stream_ollama(prompt: str) -> AsyncGenerator[str, None]:
@@ -160,21 +164,26 @@ def extract_text(path):
     else:
         raise ValueError(f"Unsupported: {ext}")
 
-# ─── Chunking ─────────────────────────────────────────────────────────────────
+# ─── Chunking (infinite loop safe) ───────────────────────────────────────────
 def chunk_text(text, source):
     text = " ".join(text.split())
     chunks, start, idx = [], 0, 0
     while start < len(text):
         end = min(start + CHUNK_SIZE, len(text))
-        for sep in (". ", "? ", "! ", "\n\n"):
-            pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
-            if pos != -1:
-                end = pos + len(sep); break
+        if end < len(text):
+            for sep in (". ", "? ", "! ", "\n\n"):
+                pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
+                if pos != -1:
+                    end = pos + len(sep)
+                    break
         chunk = text[start:end].strip()
         if chunk:
             chunks.append({"text": chunk, "source": os.path.basename(source), "chunk_id": idx})
             idx += 1
-        start = end - CHUNK_OVERLAP
+        next_start = end - CHUNK_OVERLAP
+        if next_start <= start:
+            next_start = start + CHUNK_SIZE
+        start = next_start
     return chunks
 
 # ─── Background indexing ──────────────────────────────────────────────────────
@@ -182,23 +191,37 @@ def index_file_background(path: str):
     filename = os.path.basename(path)
     try:
         indexing_status[filename] = {"status": "indexing", "progress": 0, "chunks": 0}
+        print(f"DEBUG: Starting indexing {filename}", flush=True)
 
         text = extract_text(path)
+        print(f"DEBUG: Extracted {len(text)} chars", flush=True)
+
         if not text.strip():
             indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": "Empty file"}
             return
 
-        with index_lock:
-            idx = load_index()
-            if filename in idx.sources():
-                indexing_status[filename] = {"status": "done", "progress": 100, "chunks": idx.sources()[filename]}
-                return
+        # check if already indexed without lock
+        idx = load_index()
+        already_indexed = filename in idx.sources()
+        chunks_count = idx.sources().get(filename, 0)
+        del idx
+        gc.collect()
 
+        if already_indexed:
+            indexing_status[filename] = {"status": "done", "progress": 100, "chunks": chunks_count}
+            print(f"DEBUG: Already indexed, skipping", flush=True)
+            return
+
+        print(f"DEBUG: Chunking text...", flush=True)
         chunks = chunk_text(text, path)
+        del text
+        gc.collect()
+        print(f"DEBUG: Got {len(chunks)} chunks", flush=True)
         total = len(chunks)
         batch_emb, batch_doc, batch_meta = [], [], []
 
         for i, ch in enumerate(chunks):
+            print(f"DEBUG: Embedding chunk {i}/{total}", flush=True)
             batch_emb.append(embed(ch["text"]))
             batch_doc.append(ch["text"])
             batch_meta.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
@@ -213,7 +236,7 @@ def index_file_background(path: str):
                     save_index(idx)
                     del idx
                 batch_emb, batch_doc, batch_meta = [], [], []
-                import gc; gc.collect()
+                gc.collect()
                 time.sleep(0.1)
 
         if batch_emb:
@@ -221,10 +244,15 @@ def index_file_background(path: str):
                 idx = load_index()
                 idx.add(batch_emb, batch_doc, batch_meta)
                 save_index(idx)
+                del idx
+            gc.collect()
 
         indexing_status[filename] = {"status": "done", "progress": 100, "chunks": total}
+        print(f"DEBUG: Done indexing {filename} — {total} chunks", flush=True)
 
     except Exception as e:
+        print(f"DEBUG: ERROR — {e}", flush=True)
+        import traceback; traceback.print_exc()
         indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": str(e)}
 
 # ─── FastAPI ──────────────────────────────────────────────────────────────────
@@ -241,14 +269,13 @@ Rules:
 class ChatRequest(BaseModel):
     question: str
     history: list = []
-    filter_source: str = ""  # empty = all documents
+    filter_source: str = ""
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
     with open(os.path.join(STATIC_DIR, "index.html")) as f:
         return f.read()
 
-# ── Upload file ───────────────────────────────────────────────────────────────
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     allowed = {".pdf", ".epub", ".docx", ".txt", ".md"}
@@ -261,12 +288,12 @@ async def upload_file(file: UploadFile = File(...)):
     size = os.path.getsize(dest)
     return {"filename": file.filename, "size": size, "status": "uploaded"}
 
-# ── List uploaded files ───────────────────────────────────────────────────────
 @app.get("/files")
 async def list_files():
     with index_lock:
         idx = load_index()
     indexed = idx.sources()
+    del idx
     files = []
     for fname in sorted(os.listdir(UPLOAD_DIR)):
         fpath = os.path.join(UPLOAD_DIR, fname)
@@ -282,7 +309,6 @@ async def list_files():
             })
     return {"files": files}
 
-# ── Start indexing in background ──────────────────────────────────────────────
 @app.post("/index/{filename}")
 async def index_document(filename: str, background_tasks: BackgroundTasks):
     fpath = os.path.join(UPLOAD_DIR, filename)
@@ -293,21 +319,19 @@ async def index_document(filename: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(index_file_background, fpath)
     return {"filename": filename, "status": "started"}
 
-# ── Indexing progress ─────────────────────────────────────────────────────────
 @app.get("/index/status/{filename}")
 async def index_status(filename: str):
     status = indexing_status.get(filename, {"status": "idle", "progress": 0, "chunks": 0})
     return {"filename": filename, **status}
 
-# ── List indexed documents ────────────────────────────────────────────────────
 @app.get("/documents")
 async def list_documents():
     with index_lock:
         idx = load_index()
     sources = idx.sources()
+    del idx
     return {"documents": [{"name": k, "chunks": v} for k, v in sorted(sources.items())]}
 
-# ── Remove from index ─────────────────────────────────────────────────────────
 @app.delete("/documents/{filename}")
 async def delete_document(filename: str):
     with index_lock:
@@ -318,7 +342,6 @@ async def delete_document(filename: str):
         save_index(idx)
     return {"deleted": filename}
 
-# ── Delete file entirely ──────────────────────────────────────────────────────
 @app.delete("/files/{filename}")
 async def delete_file(filename: str):
     fpath = os.path.join(UPLOAD_DIR, filename)
@@ -333,7 +356,6 @@ async def delete_file(filename: str):
     indexing_status.pop(filename, None)
     return {"deleted": filename}
 
-# ── Chat ──────────────────────────────────────────────────────────────────────
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     with index_lock:
@@ -345,6 +367,7 @@ async def chat_stream(req: ChatRequest):
 
     q_emb = embed(req.question)
     chunks = idx.query(q_emb, n=TOP_K, source_filter=req.filter_source)
+    del idx
 
     context = "\n\n".join(
         f"[{i+1}] (source: {ch['source']}, relevance: {ch['score']})\n{ch['text']}"
@@ -364,12 +387,12 @@ async def chat_stream(req: ChatRequest):
 
     return StreamingResponse(generate(), media_type="text/plain")
 
-# ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
     try:
-        _post("/api/tags", {})
-        ollama_ok = True
+        req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            ollama_ok = r.status == 200
     except:
         ollama_ok = False
     return {"ollama": ollama_ok, "model": LLM_MODEL}
