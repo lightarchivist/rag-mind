@@ -22,7 +22,7 @@ STATIC_DIR    = os.path.join(os.path.dirname(__file__), "static")
 CHUNK_SIZE    = 500
 CHUNK_OVERLAP = 80
 TOP_K         = 6
-BATCH_SIZE    = 10
+BATCH_SIZE    = 3
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR,   exist_ok=True)
@@ -45,10 +45,24 @@ class VectorIndex:
         self.documents.extend(documents)
         self.metadatas.extend(metadatas)
 
-    def query(self, query_embedding, n=TOP_K):
+    def query(self, query_embedding, n=TOP_K, source_filter=""):
         if not self.embeddings:
             return []
         q = np.array(query_embedding)
+        # filter by source if specified
+        if source_filter:
+            indices = [i for i, m in enumerate(self.metadatas) if m["source"] == source_filter]
+            if not indices:
+                return []
+            matrix = np.stack([self.embeddings[i] for i in indices])
+            norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(q)
+            norms = np.where(norms == 0, 1e-10, norms)
+            scores = matrix.dot(q) / norms
+            top_idx = np.argsort(scores)[::-1][:n]
+            return [
+                {"text": self.documents[indices[i]], "source": self.metadatas[indices[i]]["source"], "score": round(float(scores[i]), 3)}
+                for i in top_idx
+            ]
         matrix = np.stack(self.embeddings)
         norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(q)
         norms = np.where(norms == 0, 1e-10, norms)
@@ -94,12 +108,7 @@ def _post(endpoint, payload):
         raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {e}")
 
 def embed(text):
-    data = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode()
-    req = urllib.request.Request(
-        f"{OLLAMA_BASE}/api/embeddings", data=data,
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=60) as r:
-        resp = json.loads(r.read())
+    resp = _post("/api/embeddings", {"model": EMBED_MODEL, "prompt": text})
     return resp["embedding"]
 
 async def stream_ollama(prompt: str) -> AsyncGenerator[str, None]:
@@ -157,20 +166,15 @@ def chunk_text(text, source):
     chunks, start, idx = [], 0, 0
     while start < len(text):
         end = min(start + CHUNK_SIZE, len(text))
-        if end < len(text):
-            for sep in (". ", "? ", "! ", "\n\n"):
-                pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
-                if pos != -1:
-                    end = pos + len(sep)
-                    break
+        for sep in (". ", "? ", "! ", "\n\n"):
+            pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
+            if pos != -1:
+                end = pos + len(sep); break
         chunk = text[start:end].strip()
         if chunk:
             chunks.append({"text": chunk, "source": os.path.basename(source), "chunk_id": idx})
             idx += 1
-        next_start = end - CHUNK_OVERLAP
-        if next_start <= start:  # prevent infinite loop
-            next_start = start + CHUNK_SIZE
-        start = next_start
+        start = end - CHUNK_OVERLAP
     return chunks
 
 # ─── Background indexing ──────────────────────────────────────────────────────
@@ -178,32 +182,23 @@ def index_file_background(path: str):
     filename = os.path.basename(path)
     try:
         indexing_status[filename] = {"status": "indexing", "progress": 0, "chunks": 0}
-        print(f"DEBUG: Starting indexing {filename}", flush=True)
 
         text = extract_text(path)
-        print(f"DEBUG: Extracted {len(text)} chars", flush=True)
-
         if not text.strip():
             indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": "Empty file"}
             return
 
-        print(f"DEBUG: Checking index lock...", flush=True)
         with index_lock:
-            print(f"DEBUG: Inside lock, loading index...", flush=True)
             idx = load_index()
-            print(f"DEBUG: Index loaded, checking sources...", flush=True)
             if filename in idx.sources():
                 indexing_status[filename] = {"status": "done", "progress": 100, "chunks": idx.sources()[filename]}
                 return
 
-        print(f"DEBUG: Chunking text...", flush=True)
         chunks = chunk_text(text, path)
-        print(f"DEBUG: Got {len(chunks)} chunks", flush=True)
         total = len(chunks)
         batch_emb, batch_doc, batch_meta = [], [], []
 
         for i, ch in enumerate(chunks):
-            print(f"DEBUG: Embedding chunk {i}/{total}", flush=True)
             batch_emb.append(embed(ch["text"]))
             batch_doc.append(ch["text"])
             batch_meta.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
@@ -216,8 +211,10 @@ def index_file_background(path: str):
                     idx = load_index()
                     idx.add(batch_emb, batch_doc, batch_meta)
                     save_index(idx)
+                    del idx
                 batch_emb, batch_doc, batch_meta = [], [], []
-                time.sleep(0.05)
+                import gc; gc.collect()
+                time.sleep(0.1)
 
         if batch_emb:
             with index_lock:
@@ -226,10 +223,8 @@ def index_file_background(path: str):
                 save_index(idx)
 
         indexing_status[filename] = {"status": "done", "progress": 100, "chunks": total}
-        print(f"DEBUG: Done indexing {filename} — {total} chunks", flush=True)
 
     except Exception as e:
-        print(f"DEBUG: ERROR — {e}", flush=True)
         indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": str(e)}
 
 # ─── FastAPI ──────────────────────────────────────────────────────────────────
@@ -246,6 +241,7 @@ Rules:
 class ChatRequest(BaseModel):
     question: str
     history: list = []
+    filter_source: str = ""  # empty = all documents
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -348,7 +344,7 @@ async def chat_stream(req: ChatRequest):
         return StreamingResponse(no_docs(), media_type="text/plain")
 
     q_emb = embed(req.question)
-    chunks = idx.query(q_emb, n=TOP_K)
+    chunks = idx.query(q_emb, n=TOP_K, source_filter=req.filter_source)
 
     context = "\n\n".join(
         f"[{i+1}] (source: {ch['source']}, relevance: {ch['score']})\n{ch['text']}"
@@ -372,10 +368,8 @@ async def chat_stream(req: ChatRequest):
 @app.get("/health")
 async def health():
     try:
-        import urllib.request
-        req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            ollama_ok = r.status == 200
+        _post("/api/tags", {})
+        ollama_ok = True
     except:
         ollama_ok = False
     return {"ollama": ollama_ok, "model": LLM_MODEL}

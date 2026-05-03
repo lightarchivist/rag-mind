@@ -178,6 +178,25 @@
   @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
 
+  /* Doc selector */
+  .doc-selector-bar {
+    padding: 8px 0 0; flex-shrink: 0;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .doc-selector-label { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
+  .doc-selector {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 10px;
+    font-family: var(--mono); font-size: 11px; color: var(--text);
+    cursor: pointer; outline: none; transition: border-color .15s;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%234a5568'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 28px;
+  }
+  .doc-selector:focus { border-color: var(--accent); }
+  .doc-selector option { background: var(--surface2); }
+
   /* Toast */
   .toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 8px; font-family: var(--mono); font-size: 12px; background: var(--surface2); border: 1px solid var(--border); animation: fadeUp .2s ease; z-index: 200; max-width: 320px; }
   .toast.success { border-color: var(--accent); color: var(--accent); }
@@ -229,6 +248,13 @@
               <div class="chip" onclick="sendChip(this)">List the conclusions</div>
             </div>
           </div>
+        </div>
+
+        <div class="doc-selector-bar">
+          <span class="doc-selector-label">CONTEXT:</span>
+          <select class="doc-selector" id="doc-selector" onchange="updateSelector()">
+            <option value="">All indexed documents</option>
+          </select>
         </div>
 
         <div class="input-bar">
@@ -308,6 +334,7 @@ function openPanel(name) {
   if (name === 'library') loadLibrary();
   if (name === 'indexed') loadIndexed();
   if (name === 'upload')  loadRecent();
+  refreshSelector();
 }
 
 // ── Health ────────────────────────────────────────────────────────────────────
@@ -532,20 +559,24 @@ async function sendMessage() {
   try {
     const resp = await fetch('/chat/stream', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({question, history: history.slice(-4)})
+      body: JSON.stringify({question, history: history.slice(-4), filter_source: document.getElementById('doc-selector').value})
     });
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let firstChunk = true;
+    let buffer = '';
+    let headerDone = false;
 
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
-      const text = decoder.decode(value);
+      buffer += decoder.decode(value, {stream: true});
 
-      if (firstChunk && text.startsWith('{')) {
-        try { sources = JSON.parse(text.split('\n')[0]).sources || []; } catch {}
-        firstChunk = false;
+      if (!headerDone) {
+        const nl = buffer.indexOf('\n');
+        if (nl === -1) continue;
+        try { sources = JSON.parse(buffer.substring(0, nl)).sources || []; } catch {}
+        buffer = buffer.substring(nl + 1);
+        headerDone = true;
         typingDiv.remove();
         const div = document.createElement('div');
         div.className = 'msg assistant';
@@ -557,12 +588,21 @@ async function sendMessage() {
         div.querySelector('.msg-body').appendChild(bubble);
         div.querySelector('.msg-body').appendChild(sourceDiv);
         msgs.appendChild(div);
-        continue;
       }
-      if (bubble) { answer += text; bubble.textContent = answer; msgs.scrollTop = msgs.scrollHeight; }
+
+      if (bubble && buffer) {
+        answer += buffer;
+        bubble.textContent = answer;
+        buffer = '';
+        msgs.scrollTop = msgs.scrollHeight;
+      }
     }
-    if (sources.length && sourceDiv) sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${s}</span>`).join('');
+
+    if (sources.length && sourceDiv) {
+      sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${s}</span>`).join('');
+    }
     history.push({q: question, a: answer});
+
   } catch {
     typingDiv?.remove();
     const div = document.createElement('div');
@@ -578,6 +618,36 @@ async function sendMessage() {
 
 function sendChip(el) { document.getElementById('input').value = el.textContent; sendMessage(); }
 
+function updateSelector() {
+  const sel = document.getElementById('doc-selector');
+  const val = sel.value;
+  const hint = document.getElementById('input');
+  if (val) {
+    hint.placeholder = `Ask about ${val}…`;
+  } else {
+    hint.placeholder = 'Ask anything about your indexed documents…';
+  }
+}
+
+async function refreshSelector() {
+  const r = await fetch('/documents');
+  const d = await r.json();
+  const sel = document.getElementById('doc-selector');
+  const current = sel.value;
+  // keep first option
+  while (sel.options.length > 1) sel.remove(1);
+  d.documents.forEach(doc => {
+    const opt = document.createElement('option');
+    opt.value = doc.name;
+    opt.textContent = doc.name + ` (${doc.chunks} chunks)`;
+    sel.appendChild(opt);
+  });
+  // restore selection if still valid
+  if (current && d.documents.find(d => d.name === current)) {
+    sel.value = current;
+  }
+}
+
 const textarea = document.getElementById('input');
 textarea.addEventListener('input', () => { textarea.style.height = 'auto'; textarea.style.height = textarea.scrollHeight + 'px'; });
 textarea.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
@@ -589,7 +659,7 @@ function toast(msg, type='success') {
   setTimeout(() => el.remove(), 3500);
 }
 
-checkHealth(); setInterval(checkHealth, 30000); updateBadges();
+checkHealth(); setInterval(checkHealth, 30000); updateBadges(); refreshSelector(); setInterval(refreshSelector, 10000);
 </script>
 </body>
 </html>
