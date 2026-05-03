@@ -211,7 +211,7 @@ class ChatRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    with open("/app/static/index.html") as f:
+    with open(os.path.join(os.path.dirname(__file__), "static", "index.html")) as f:
         return f.read()
 
 # ── Upload file (store only, no indexing) ─────────────────────────────────────
@@ -326,4 +326,4 @@ async def health():
         ollama_ok = False
     return {"ollama": ollama_ok, "model": LLM_MODEL}
 
-app.mount("/static", StaticFiles(directory="/app/static"), name="static")
+app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
