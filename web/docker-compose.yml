@@ -2,7 +2,8 @@ services:
   ragmind:
     build: .
     container_name: ragmind
-    mem_limit: 1g
+    mem_limit: 2g
+    memswap_limit: 4g
     ports:
       - "8000:8000"
     volumes:
@@ -11,8 +12,7 @@ services:
       - OLLAMA_BASE=http://host.docker.internal:11434
       - LLM_MODEL=llama3
       - EMBED_MODEL=nomic-embed-text
-      - CHROMA_DIR=/data/chromadb
-      - UPLOAD_DIR=/data/uploads
+      - DATA_DIR=/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

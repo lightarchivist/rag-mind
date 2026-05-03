@@ -1,35 +1,82 @@
 """
-RagMind Web — FastAPI backend
-Exposes the RAG pipeline over HTTP for the web UI.
+RAG-MIND Web — FastAPI backend
+Lightweight RAG using numpy, no ChromaDB.
+Batched indexing to prevent memory spikes.
 """
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-import os, json, hashlib, shutil, asyncio
+import os, json, hashlib, shutil, pickle, time
 from typing import AsyncGenerator
+import numpy as np
 
-# ─── Re-use core RAG logic ────────────────────────────────────────────────────
-import sys
-sys.path.insert(0, "/app")
-
-OLLAMA_BASE  = os.getenv("OLLAMA_BASE", "http://host.docker.internal:11434")
-LLM_MODEL    = os.getenv("LLM_MODEL",   "llama3")
-EMBED_MODEL  = os.getenv("EMBED_MODEL", "nomic-embed-text")
-CHROMA_DIR   = os.getenv("CHROMA_DIR",  "/data/chromadb")
-UPLOAD_DIR   = os.getenv("UPLOAD_DIR",  "/data/uploads")
-COLLECTION   = "rag_documents"
-CHUNK_SIZE   = 500
-CHUNK_OVERLAP= 80
-TOP_K        = 6
+OLLAMA_BASE   = os.getenv("OLLAMA_BASE", "http://host.docker.internal:11434")
+LLM_MODEL     = os.getenv("LLM_MODEL",   "llama3")
+EMBED_MODEL   = os.getenv("EMBED_MODEL", "nomic-embed-text")
+DATA_DIR      = os.getenv("DATA_DIR",    "/data")
+UPLOAD_DIR    = os.path.join(DATA_DIR, "uploads")
+INDEX_FILE    = os.path.join(DATA_DIR, "index.pkl")
+CHUNK_SIZE    = 500
+CHUNK_OVERLAP = 80
+TOP_K         = 6
+BATCH_SIZE    = 10   # embed this many chunks at a time
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(CHROMA_DIR, exist_ok=True)
+os.makedirs(DATA_DIR,   exist_ok=True)
 
 import urllib.request, urllib.error
 
-# ─── Ollama helpers ───────────────────────────────────────────────────────────
+# ─── Simple numpy vector index ────────────────────────────────────────────────
+class VectorIndex:
+    def __init__(self):
+        self.embeddings = []
+        self.documents  = []
+        self.metadatas  = []
+
+    def add(self, embeddings, documents, metadatas):
+        self.embeddings.extend([np.array(e) for e in embeddings])
+        self.documents.extend(documents)
+        self.metadatas.extend(metadatas)
+
+    def query(self, query_embedding, n=TOP_K):
+        if not self.embeddings:
+            return []
+        q = np.array(query_embedding)
+        matrix = np.stack(self.embeddings)
+        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(q)
+        norms = np.where(norms == 0, 1e-10, norms)
+        scores = matrix.dot(q) / norms
+        top_idx = np.argsort(scores)[::-1][:n]
+        return [
+            {"text": self.documents[i], "source": self.metadatas[i]["source"], "score": round(float(scores[i]), 3)}
+            for i in top_idx
+        ]
+
+    def sources(self):
+        counts = {}
+        for m in self.metadatas:
+            counts[m["source"]] = counts.get(m["source"], 0) + 1
+        return counts
+
+    def delete_source(self, source):
+        keep = [i for i, m in enumerate(self.metadatas) if m["source"] != source]
+        self.embeddings = [self.embeddings[i] for i in keep]
+        self.documents  = [self.documents[i]  for i in keep]
+        self.metadatas  = [self.metadatas[i]  for i in keep]
+
+def load_index() -> VectorIndex:
+    if os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, "rb") as f:
+            return pickle.load(f)
+    return VectorIndex()
+
+def save_index(idx: VectorIndex):
+    with open(INDEX_FILE, "wb") as f:
+        pickle.dump(idx, f)
+
+# ─── Ollama ───────────────────────────────────────────────────────────────────
 def _post(endpoint, payload):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -100,7 +147,7 @@ def chunk_text(text, source):
     chunks, start, idx = [], 0, 0
     while start < len(text):
         end = min(start + CHUNK_SIZE, len(text))
-        for sep in (". ", ".\n", "? ", "! ", "\n\n"):
+        for sep in (". ", "? ", "! ", "\n\n"):
             pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
             if pos != -1:
                 end = pos + len(sep); break
@@ -111,51 +158,44 @@ def chunk_text(text, source):
         start = end - CHUNK_OVERLAP
     return chunks
 
-# ─── Vector store ─────────────────────────────────────────────────────────────
-def get_collection():
-    import chromadb
-    client = chromadb.PersistentClient(path=CHROMA_DIR)
-    return client.get_or_create_collection(
-        name=COLLECTION, metadata={"hnsw:space": "cosine"})
-
+# ─── Indexing (batched) ───────────────────────────────────────────────────────
 def index_file(path):
     text = extract_text(path)
     if not text.strip():
         raise ValueError("Empty or unreadable file")
+
+    idx = load_index()
+    src = os.path.basename(path)
+
+    # check already indexed
+    if src in idx.sources():
+        return {"status": "already_indexed", "chunks": idx.sources()[src]}
+
     chunks = chunk_text(text, path)
-    col = get_collection()
-    existing = col.get(where={"source": os.path.basename(path)})
-    if existing["ids"]:
-        return {"status": "skipped", "chunks": len(existing["ids"])}
-    file_hash = hashlib.md5(text.encode()).hexdigest()[:12]
-    ids, embeddings, documents, metadatas = [], [], [], []
+    total = len(chunks)
+    batch_emb, batch_doc, batch_meta = [], [], []
+
     for i, ch in enumerate(chunks):
-        ids.append(f"{file_hash}_{i}")
-        embeddings.append(embed(ch["text"]))
-        documents.append(ch["text"])
-        metadatas.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
-    col.add(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
-    return {"status": "indexed", "chunks": len(chunks)}
+        batch_emb.append(embed(ch["text"]))
+        batch_doc.append(ch["text"])
+        batch_meta.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
 
-def retrieve(question, top_k=TOP_K):
-    col = get_collection()
-    if col.count() == 0:
-        return []
-    q_emb = embed(question)
-    results = col.query(
-        query_embeddings=[q_emb],
-        n_results=min(top_k, col.count()),
-        include=["documents", "metadatas", "distances"])
-    return [
-        {"text": doc, "source": meta["source"], "score": round(1 - dist, 3)}
-        for doc, meta, dist in zip(
-            results["documents"][0],
-            results["metadatas"][0],
-            results["distances"][0])
-    ]
+        # save every BATCH_SIZE chunks
+        if (i + 1) % BATCH_SIZE == 0:
+            idx.add(batch_emb, batch_doc, batch_meta)
+            save_index(idx)
+            batch_emb, batch_doc, batch_meta = [], [], []
+            time.sleep(0.05)  # small pause between batches
 
-# ─── FastAPI app ──────────────────────────────────────────────────────────────
-app = FastAPI(title="RagMind", version="1.0")
+    # save any remaining chunks
+    if batch_emb:
+        idx.add(batch_emb, batch_doc, batch_meta)
+        save_index(idx)
+
+    return {"status": "indexed", "chunks": total}
+
+# ─── FastAPI ──────────────────────────────────────────────────────────────────
+app = FastAPI(title="RAG-MIND", version="1.0")
 
 SYSTEM = """You are a document analysis assistant.
 Answer questions ONLY using the retrieved passages below.
@@ -174,6 +214,7 @@ async def root():
     with open("/app/static/index.html") as f:
         return f.read()
 
+# ── Upload file (store only, no indexing) ─────────────────────────────────────
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
     allowed = {".pdf", ".epub", ".docx", ".txt", ".md"}
@@ -183,41 +224,79 @@ async def upload_file(file: UploadFile = File(...)):
     dest = os.path.join(UPLOAD_DIR, file.filename)
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+    size = os.path.getsize(dest)
+    return {"filename": file.filename, "size": size, "status": "uploaded"}
+
+# ── List uploaded files ───────────────────────────────────────────────────────
+@app.get("/files")
+async def list_files():
+    idx = load_index()
+    indexed = idx.sources()
+    files = []
+    for fname in sorted(os.listdir(UPLOAD_DIR)):
+        fpath = os.path.join(UPLOAD_DIR, fname)
+        if os.path.isfile(fpath):
+            files.append({
+                "name": fname,
+                "size": os.path.getsize(fpath),
+                "indexed": fname in indexed,
+                "chunks": indexed.get(fname, 0),
+            })
+    return {"files": files}
+
+# ── Index a specific uploaded file ────────────────────────────────────────────
+@app.post("/index/{filename}")
+async def index_document(filename: str):
+    fpath = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(fpath):
+        raise HTTPException(404, f"File not found: {filename}")
     try:
-        result = index_file(dest)
-        return {"filename": file.filename, **result}
+        result = index_file(fpath)
+        return {"filename": filename, **result}
     except Exception as e:
         raise HTTPException(500, str(e))
 
+# ── List indexed documents ────────────────────────────────────────────────────
 @app.get("/documents")
 async def list_documents():
-    col = get_collection()
-    all_meta = col.get(include=["metadatas"])["metadatas"]
-    sources = {}
-    for m in all_meta:
-        sources[m["source"]] = sources.get(m["source"], 0) + 1
+    idx = load_index()
+    sources = idx.sources()
     return {"documents": [{"name": k, "chunks": v} for k, v in sorted(sources.items())]}
 
+# ── Remove from index (keeps file) ───────────────────────────────────────────
 @app.delete("/documents/{filename}")
 async def delete_document(filename: str):
-    col = get_collection()
-    existing = col.get(where={"source": filename})
-    if not existing["ids"]:
-        raise HTTPException(404, "Document not found")
-    col.delete(ids=existing["ids"])
-    # remove uploaded file
-    fpath = os.path.join(UPLOAD_DIR, filename)
-    if os.path.exists(fpath):
-        os.remove(fpath)
+    idx = load_index()
+    if filename not in idx.sources():
+        raise HTTPException(404, "Document not found in index")
+    idx.delete_source(filename)
+    save_index(idx)
     return {"deleted": filename}
 
+# ── Delete file entirely ──────────────────────────────────────────────────────
+@app.delete("/files/{filename}")
+async def delete_file(filename: str):
+    fpath = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(fpath):
+        raise HTTPException(404, "File not found")
+    idx = load_index()
+    if filename in idx.sources():
+        idx.delete_source(filename)
+        save_index(idx)
+    os.remove(fpath)
+    return {"deleted": filename}
+
+# ── Chat ──────────────────────────────────────────────────────────────────────
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
-    chunks = retrieve(req.question)
-    if not chunks:
+    idx = load_index()
+    if not idx.embeddings:
         async def no_docs():
-            yield "No documents indexed yet. Please upload some documents first."
+            yield "No documents indexed yet. Upload a file and click Index."
         return StreamingResponse(no_docs(), media_type="text/plain")
+
+    q_emb = embed(req.question)
+    chunks = idx.query(q_emb, n=TOP_K)
 
     context = "\n\n".join(
         f"[{i+1}] (source: {ch['source']}, relevance: {ch['score']})\n{ch['text']}"
@@ -228,7 +307,6 @@ async def chat_stream(req: ChatRequest):
         history_text += f"User: {h['q']}\nAssistant: {h['a']}\n"
 
     prompt = f"{SYSTEM}\n\n=== RETRIEVED PASSAGES ===\n{context}\n=== END ===\n\n{history_text}User: {req.question}\nAssistant:"
-
     sources = list({ch["source"] for ch in chunks})
 
     async def generate():
@@ -238,6 +316,7 @@ async def chat_stream(req: ChatRequest):
 
     return StreamingResponse(generate(), media_type="text/plain")
 
+# ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
     try:
