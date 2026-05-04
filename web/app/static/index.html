@@ -3,22 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RAG-MIND</title>
+<title>Rag-Mind</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:      #f5f7f5;
+    --bg:      #e8f5e8;
     --surface: #ffffff;
-    --surface2:#edf2ed;
-    --border:  #cdd8cd;
-    --accent:  #6d28d9;
-    --accent2: #16a34a;
+    --surface2:#d4edd4;
+    --border:  #86c986;
+    --accent:  #7c3aed;
+    --accent2: #15803d;
     --muted:   #6b7280;
-    --text:    #14532d;
-    --text2:   #166534;
+    --text:    #111111;
+    --text2:   #374151;
     --danger:  #dc2626;
     --warning: #d97706;
     --mono:    'DM Mono', monospace;
@@ -36,11 +36,11 @@
     background: var(--surface); border-bottom: 1px solid var(--border);
   }
   .logo {
-    font-size: 17px; font-weight: 800; letter-spacing: 2px;
-    color: var(--text);
+    font-size: 17px; font-weight: 800; letter-spacing: 0px;
+    color: var(--text); background: none;
   }
-  .logo span { color: var(--accent); }
-  .logo-dash { color: var(--muted); }
+  .logo span { color: var(--accent); background: none; }
+  .logo-dash { color: var(--muted); background: none; }
 
   .nav { display: flex; gap: 4px; margin-left: auto; }
   .nav-btn {
@@ -80,7 +80,7 @@
 
   /* Welcome */
   .welcome { margin: auto; text-align: center; max-width: 420px; animation: fadeUp .4s ease; }
-  .welcome-logo { font-size: 40px; font-weight: 800; letter-spacing: 4px; margin-bottom: 8px; }
+  .welcome-logo { font-size: 40px; font-weight: 800; letter-spacing: 0px; margin-bottom: 8px; }
   .welcome-logo span { color: var(--accent); }
   .welcome-logo .dash { color: var(--muted); }
   .welcome-sub { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 24px; line-height: 1.8; }
@@ -178,6 +178,11 @@
   @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes bounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
 
+  /* Timestamps */
+  .msg-time { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 4px; }
+  .msg.user .msg-time { text-align: right; clear: both; }
+  .msg.assistant .msg-time { text-align: left; }
+
   /* Doc selector */
   .doc-selector-bar {
     padding: 8px 0 0; flex-shrink: 0;
@@ -209,7 +214,7 @@
     border-radius: 16px; padding: 32px; max-width: 480px; width: 90%;
     animation: fadeUp .2s ease;
   }
-  .modal-title { font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-bottom: 16px; }
+  .modal-title { font-size: 22px; font-weight: 800; letter-spacing: 0px; margin-bottom: 16px; }
   .modal-title span { color: var(--accent2); }
   .modal-body { font-size: 14px; line-height: 1.8; color: var(--text2); margin-bottom: 20px; }
   .modal-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
@@ -235,7 +240,7 @@
 
   <!-- Header -->
   <header>
-    <div class="logo">RAG<span class="logo-dash">-</span><span>MIND</span></div>
+    <div class="logo"><span style="color:#16a34a">Rag</span><span style="color:#9ca3af">-</span><span style="color:#7c3aed">Mind</span></div>
 
     <nav class="nav">
       <button class="nav-btn" id="btn-upload" onclick="openPanel('upload')">
@@ -265,7 +270,7 @@
       <div class="chat">
         <div class="messages" id="messages">
           <div class="welcome" id="welcome">
-            <div class="welcome-logo">RAG<span class="dash">-</span><span>MIND</span></div>
+            <div class="welcome-logo"><span style="color:#16a34a">Rag</span><span style="color:var(--muted)">-</span><span style="color:#7c3aed">Mind</span></div>
             <div class="welcome-sub">
               local RAG · no cloud · your data stays yours<br>
               upload a document and start asking questions
@@ -341,7 +346,7 @@
 <div class="modal-overlay" id="about-overlay" onclick="closeAbout()">
   <div class="modal" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="closeAbout()">✕</button>
-    <div class="modal-title">RAG<span>-</span>MIND</div>
+    <div class="modal-title"><span style="color:#16a34a">Rag</span><span style="color:var(--muted)">-</span><span style="color:#7c3aed">Mind</span></div>
     <div class="modal-body">
       RAG-MIND is a fully local, privacy-first document Q&A system. Users upload PDFs, EPUBs, and other documents, index them using a local embedding model, and ask natural language questions answered exclusively from document content — no cloud services, no API keys, no data leaving the machine.
     </div>
@@ -602,7 +607,8 @@ async function sendMessage() {
 
   const userDiv = document.createElement('div');
   userDiv.className = 'msg user';
-  userDiv.innerHTML = `<div class="msg-avatar">U</div><div class="msg-body"><div class="msg-bubble">${question}</div></div>`;
+  const userTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+  userDiv.innerHTML = `<div class="msg-avatar">U</div><div class="msg-body"><div class="msg-bubble">${question}</div><div class="msg-time">${userTime}</div></div>`;
   msgs.appendChild(userDiv);
 
   const typingDiv = document.createElement('div');
@@ -615,6 +621,8 @@ async function sendMessage() {
   streaming = true;
 
   let answer = '', sources = [], bubble = null, sourceDiv = null;
+  const startTime = Date.now();
+  const startTimeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
 
   try {
     const resp = await fetch('/chat/stream', {
@@ -660,6 +668,14 @@ async function sendMessage() {
 
     if (sources.length && sourceDiv) {
       sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${s}</span>`).join('');
+    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const endTimeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+    if (bubble) {
+      const timeDiv = document.createElement('div');
+      timeDiv.className = 'msg-time';
+      timeDiv.textContent = `${endTimeStr} · ${elapsed}s`;
+      bubble.parentNode.insertBefore(timeDiv, sourceDiv);
     }
     history.push({q: question, a: answer});
 
