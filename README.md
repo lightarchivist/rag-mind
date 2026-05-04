@@ -9,8 +9,7 @@ Ask natural language questions across PDFs, EPUBs, books, and documents using Ll
 
 ## Acknowledgements
 
-This project was developed with AI assistance.
-All code has been reviewed, tested, and deployed by the author.
+This project was developed with AI assistance as part of coursework while studying at ATU. All code has been reviewed, tested, and deployed by the author.
 
 ---
 
