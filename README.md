@@ -1,4 +1,9 @@
-# RAG-MIND
+# RAG-MIND 
+
+## Acknowledgements
+
+This project was developed with AI assistance.
+All code has been reviewed, tested, and deployed by the author.
 
 > Local RAG-powered document Q&A — no cloud, no API keys, your data stays yours.
 
