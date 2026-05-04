@@ -1,11 +1,11 @@
 # RAG-MIND 
 
+> Local RAG-powered document Q&A — no cloud, no API keys, your data stays yours.
+
 ## Acknowledgements
 
 This project was developed with AI assistance.
 All code has been reviewed, tested, and deployed by the author.
-
-> Local RAG-powered document Q&A — no cloud, no API keys, your data stays yours.
 
 Ask natural language questions across PDFs, EPUBs, books, and documents using Llama 3 running entirely on your own machine.
 
