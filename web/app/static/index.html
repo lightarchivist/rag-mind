@@ -238,9 +238,6 @@
     <div class="logo">RAG<span class="logo-dash">-</span><span>MIND</span></div>
 
     <nav class="nav">
-      <button class="nav-btn" id="btn-about" onclick="openAbout()">
-        ℹ About
-      </button>
       <button class="nav-btn" id="btn-upload" onclick="openPanel('upload')">
         ⬆ Upload
       </button>
@@ -256,6 +253,9 @@
       <div class="health-dot" id="health-dot"></div>
       <span class="health-label" id="health-label">checking...</span>
     </div>
+    <button class="nav-btn" onclick="openAbout()" style="margin-left:8px">
+      ℹ About
+    </button>
   </header>
 
   <div class="body">
@@ -367,6 +367,13 @@ let streaming = false;
 let currentPanel = null;
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
+function openAbout() {
+  document.getElementById('about-overlay').classList.add('open');
+}
+function closeAbout() {
+  document.getElementById('about-overlay').classList.remove('open');
+}
+
 function openPanel(name) {
   const panel = document.getElementById('panel');
   if (currentPanel === name) {
