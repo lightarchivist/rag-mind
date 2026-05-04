@@ -2,15 +2,15 @@
 
 > Local RAG-powered document Q&A — no cloud, no API keys, your data stays yours.
 
-## Acknowledgements
-
-This project was developed with AI assistance.
-All code has been reviewed, tested, and deployed by the author.
-
 Ask natural language questions across PDFs, EPUBs, books, and documents using Llama 3 running entirely on your own machine.
 
 [![Licence: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-lightarchivist%2Frag--mind-blue)](https://hub.docker.com/r/lightarchivist/rag-mind)
+
+## Acknowledgements
+
+This project was developed with AI assistance.
+All code has been reviewed, tested, and deployed by the author.
 
 ---
 
