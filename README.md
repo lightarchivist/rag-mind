@@ -3,6 +3,9 @@
 Ask questions across PDFs, books, and documents using a fully local
 RAG pipeline — no cloud, no API keys.
 
+## Llama 3 requires attribution to Meta
+## ebooklib (EPUB support) is AGPL-3.0 and optional
+
 ## Setup Reference
 
 ### macOS (M1/M2/M3)
