@@ -38,7 +38,8 @@ cd rag-mind
 4a. Run with Docker (recommended)
 cd web
 docker compose up --build -d
-# Open http://localhost:8000 or http://<your-ip>:8000
+
+Open: http://localhost:8000 or http://<your-ip>:8000
 
 4b. Run without Docker (Python direct)
 python3 -m venv venv && source venv/bin/activate
