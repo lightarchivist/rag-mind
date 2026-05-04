@@ -1,0 +1,13 @@
+RAG-MIND uses the following third-party models and software:
+
+Llama 3
+-------
+Copyright (c) Meta Platforms, Inc. All Rights Reserved.
+Licence: Meta Llama 3 Community Licence
+URL: https://llama.meta.com/llama3/license/
+
+nomic-embed-text
+----------------
+Copyright (c) Nomic, Inc.
+Licence: Apache 2.0
+URL: https://huggingface.co/nomic-ai/nomic-embed-text-v1
