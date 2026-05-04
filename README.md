@@ -11,13 +11,13 @@ Ask natural language questions across PDFs, EPUBs, books, and documents using Ll
 
 ## Features
 
-- 📄 Upload PDF, EPUB, DOCX, TXT, Markdown
-- 🔍 Semantic search using nomic-embed-text embeddings
-- 💬 Streaming answers grounded strictly in your documents
-- 📚 Index multiple documents, switch context per conversation
-- 🌐 Access from any device on your local network
-- 🔒 100% local — nothing leaves your machine
-- 🖥️ CLI and web interface included
+-  Upload PDF, EPUB, DOCX, TXT, Markdown
+-  Semantic search using nomic-embed-text embeddings
+-  Streaming answers grounded strictly in your documents
+-  Index multiple documents, switch context per conversation
+-  Access from any device on your local network
+-  100% local — nothing leaves your machine
+-  CLI and web interface included
 
 ---
 
