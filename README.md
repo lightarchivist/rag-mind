@@ -1,6 +1,6 @@
 # RAG-MIND 
 
-> Local RAG-powered document Q&A — no cloud, no API keys, your data stays yours.
+> Started as an LLM CLI for academic paper analysis — now a full local RAG system for any document — no cloud, no API keys, your data stays yours.
 
 Ask natural language questions across PDFs, EPUBs, books, and documents using Llama 3 running entirely on your own machine.
 
