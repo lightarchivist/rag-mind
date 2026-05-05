@@ -9,7 +9,7 @@ Ask natural language questions across PDFs, EPUBs, books, and documents using Ll
 
 ## Acknowledgements
 
-This project was developed with AI assistance as part of coursework while studying at ATU. All code has been reviewed, tested, and deployed by the author.
+What started as a small assignment at ATU has grown into a fully functional local RAG system — and may continue to evolve. Developed with AI assistance. All code has been reviewed, tested, and deployed by the author.
 
 ---
 
