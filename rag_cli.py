@@ -11,7 +11,7 @@
 #!/usr/bin/env python3
 """
 rag_cli.py — Universal RAG-powered CLI for Document Q&A
-Scales from a single paper to multiple books using Ollama + ChromaDB.
+Scales from a single paper to multiple books using Ollama.
 
 Usage:
     # Index one or more documents, then chat
