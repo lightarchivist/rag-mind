@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 import os, json, shutil, pickle, time, threading, gc
-from typing import AsyncGenerator
+from typing import Iterator
 import numpy as np
 
 OLLAMA_BASE   = os.getenv("OLLAMA_BASE", "http://host.docker.internal:11434")
@@ -115,7 +115,9 @@ def embed(text):
         resp = json.loads(r.read())
     return resp["embedding"]
 
-async def stream_ollama(prompt: str) -> AsyncGenerator[str, None]:
+# A plain (sync) generator: StreamingResponse runs it in a worker thread, so the
+# blocking urllib read doesn't freeze the server for everyone else.
+def stream_ollama(prompt: str) -> Iterator[str]:
     data = json.dumps({
         "model": LLM_MODEL, "prompt": prompt, "stream": True,
         "options": {"temperature": 0.1, "num_ctx": 4096},
@@ -134,8 +136,26 @@ async def stream_ollama(prompt: str) -> AsyncGenerator[str, None]:
                     yield tok
                 if chunk.get("done"):
                     break
-    except urllib.error.URLError as e:
+    except OSError as e:          # URLError, timeouts, dropped connections
         yield f"\n[ERROR: {e}]"
+
+# ─── Upload paths ─────────────────────────────────────────────────────────────
+def safe_filename(name: str) -> str:
+    """Reduce a client-supplied name to a plain file name (no folders, no '..',
+    no control or Windows-reserved characters)."""
+    name = (name or "").replace("\\", "/").split("/")[-1]
+    name = "".join(ch for ch in name if ch.isprintable() and ch not in '<>:"|?*')
+    name = name.strip().lstrip(".").strip()
+    if not name or len(name) > 200:
+        raise HTTPException(400, "Invalid file name")
+    return name
+
+def upload_path(name: str) -> str:
+    """Full path for a file in UPLOAD_DIR; refuses anything that would land elsewhere."""
+    path = os.path.join(UPLOAD_DIR, safe_filename(name))
+    if os.path.dirname(os.path.realpath(path)) != os.path.realpath(UPLOAD_DIR):
+        raise HTTPException(400, "Invalid file name")
+    return path
 
 # ─── Text extraction ──────────────────────────────────────────────────────────
 def extract_text(path):
@@ -180,6 +200,8 @@ def chunk_text(text, source):
         if chunk:
             chunks.append({"text": chunk, "source": os.path.basename(source), "chunk_id": idx})
             idx += 1
+        if end >= len(text):
+            break                     # otherwise the tail gets indexed again as an extra chunk
         next_start = end - CHUNK_OVERLAP
         if next_start <= start:
             next_start = start + CHUNK_SIZE
@@ -271,25 +293,42 @@ class ChatRequest(BaseModel):
     history: list = []
     filter_source: str = ""
 
+# Endpoints that touch the disk or Ollama are plain `def`, so FastAPI runs them
+# in a worker thread instead of blocking the event loop for every other user.
+
 @app.get("/", response_class=HTMLResponse)
-async def root():
-    with open(os.path.join(STATIC_DIR, "index.html")) as f:
+def root():
+    with open(os.path.join(STATIC_DIR, "index.html"), encoding="utf-8") as f:
         return f.read()
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+def upload_file(file: UploadFile = File(...)):
     allowed = {".pdf", ".epub", ".docx", ".txt", ".md"}
-    ext = os.path.splitext(file.filename)[1].lower()
+    dest = upload_path(file.filename)
+    name = os.path.basename(dest)
+    ext = os.path.splitext(name)[1].lower()
     if ext not in allowed:
         raise HTTPException(400, f"Unsupported type: {ext}")
-    dest = os.path.join(UPLOAD_DIR, file.filename)
+    if indexing_status.get(name, {}).get("status") == "indexing":
+        raise HTTPException(409, f"{name} is being indexed right now; try again when it finishes")
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+    # A re-uploaded file may have new content, so drop its old chunks;
+    # the user then re-indexes it from the Library.
+    replaced = False
+    with index_lock:
+        idx = load_index()
+        if name in idx.sources():
+            idx.delete_source(name)
+            save_index(idx)
+            replaced = True
+        del idx
+    indexing_status.pop(name, None)
     size = os.path.getsize(dest)
-    return {"filename": file.filename, "size": size, "status": "uploaded"}
+    return {"filename": name, "size": size, "status": "uploaded", "replaced": replaced}
 
 @app.get("/files")
-async def list_files():
+def list_files():
     with index_lock:
         idx = load_index()
     indexed = idx.sources()
@@ -310,14 +349,17 @@ async def list_files():
     return {"files": files}
 
 @app.post("/index/{filename}")
-async def index_document(filename: str, background_tasks: BackgroundTasks):
-    fpath = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(fpath):
+def index_document(filename: str, background_tasks: BackgroundTasks):
+    fpath = upload_path(filename)
+    if not os.path.isfile(fpath):
         raise HTTPException(404, f"File not found: {filename}")
-    if indexing_status.get(filename, {}).get("status") == "indexing":
-        return {"filename": filename, "status": "already_indexing"}
+    name = os.path.basename(fpath)
+    if indexing_status.get(name, {}).get("status") == "indexing":
+        return {"filename": name, "status": "already_indexing"}
+    # Mark it now, so a quick second click can't start a second indexing job.
+    indexing_status[name] = {"status": "indexing", "progress": 0, "chunks": 0}
     background_tasks.add_task(index_file_background, fpath)
-    return {"filename": filename, "status": "started"}
+    return {"filename": name, "status": "started"}
 
 @app.get("/index/status/{filename}")
 async def index_status(filename: str):
@@ -325,7 +367,7 @@ async def index_status(filename: str):
     return {"filename": filename, **status}
 
 @app.get("/documents")
-async def list_documents():
+def list_documents():
     with index_lock:
         idx = load_index()
     sources = idx.sources()
@@ -333,7 +375,7 @@ async def list_documents():
     return {"documents": [{"name": k, "chunks": v} for k, v in sorted(sources.items())]}
 
 @app.delete("/documents/{filename}")
-async def delete_document(filename: str):
+def delete_document(filename: str):
     with index_lock:
         idx = load_index()
         if filename not in idx.sources():
@@ -343,29 +385,32 @@ async def delete_document(filename: str):
     return {"deleted": filename}
 
 @app.delete("/files/{filename}")
-async def delete_file(filename: str):
-    fpath = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(fpath):
+def delete_file(filename: str):
+    fpath = upload_path(filename)
+    if not os.path.isfile(fpath):
         raise HTTPException(404, "File not found")
+    name = os.path.basename(fpath)
     with index_lock:
         idx = load_index()
-        if filename in idx.sources():
-            idx.delete_source(filename)
+        if name in idx.sources():
+            idx.delete_source(name)
             save_index(idx)
     os.remove(fpath)
-    indexing_status.pop(filename, None)
-    return {"deleted": filename}
+    indexing_status.pop(name, None)
+    return {"deleted": name}
 
 @app.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
+def chat_stream(req: ChatRequest):
     with index_lock:
         idx = load_index()
     if not idx.embeddings:
-        async def no_docs():
-            yield "No documents indexed yet. Upload a file and click Index."
-        return StreamingResponse(no_docs(), media_type="text/plain")
+        return StreamingResponse(iter(["No documents indexed yet. Upload a file and click Index."]),
+                                 media_type="text/plain")
 
-    q_emb = embed(req.question)
+    try:
+        q_emb = embed(req.question)
+    except OSError as e:
+        raise HTTPException(503, f"Cannot reach Ollama: {e}")
     chunks = idx.query(q_emb, n=TOP_K, source_filter=req.filter_source)
     del idx
 
@@ -380,20 +425,19 @@ async def chat_stream(req: ChatRequest):
     prompt = f"{SYSTEM}\n\n=== RETRIEVED PASSAGES ===\n{context}\n=== END ===\n\n{history_text}User: {req.question}\nAssistant:"
     sources = list({ch["source"] for ch in chunks})
 
-    async def generate():
+    def generate():
         yield json.dumps({"sources": sources}) + "\n"
-        async for token in stream_ollama(prompt):
-            yield token
+        yield from stream_ollama(prompt)
 
     return StreamingResponse(generate(), media_type="text/plain")
 
 @app.get("/health")
-async def health():
+def health():
     try:
         req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags")
         with urllib.request.urlopen(req, timeout=5) as r:
             ollama_ok = r.status == 200
-    except:
+    except Exception:
         ollama_ok = False
     return {"ollama": ollama_ok, "model": LLM_MODEL}
 
