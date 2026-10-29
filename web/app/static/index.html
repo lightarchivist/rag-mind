@@ -4,26 +4,116 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rag-Mind</title>
+<script>
+  // Apply the saved theme before first paint so there's no flash of the wrong theme.
+  (function () {
+    var t = 'system';
+    try { t = localStorage.getItem('ragmind-theme') || 'system'; } catch (e) {}
+    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+  /* ── Themes ──────────────────────────────────────────────────────────────
+     Light is the default. Dark applies when the user picks it, or when the
+     user picks "System" (no data-theme attribute) and the OS is in dark mode. */
   :root {
-    --bg:      #e8f5e8;
-    --surface: #ffffff;
-    --surface2:#d4edd4;
-    --border:  #86c986;
-    --accent:  #7c3aed;
-    --accent2: #15803d;
-    --muted:   #6b7280;
-    --text:    #111111;
-    --text2:   #374151;
-    --danger:  #dc2626;
-    --warning: #d97706;
-    --mono:    'DM Mono', monospace;
-    --sans:    'Syne', sans-serif;
+    color-scheme: light;
+    --bg:            #e8f5e8;
+    --surface:       #ffffff;
+    --surface2:      #d4edd4;
+    --border:        #86c986;
+    --accent:        #7c3aed;              /* text, borders, icons */
+    --accent-strong: #7c3aed;              /* filled buttons/bubbles with white text */
+    --accent-soft:   rgba(124,58,237,.10); /* tinted backgrounds */
+    --accent-line:   rgba(124,58,237,.30); /* tinted borders */
+    --accent2:       #15803d;
+    --brand-rag:     #16a34a;              /* "Rag" in the logo */
+    --on-accent:     #ffffff;
+    --muted:         #6b7280;
+    --text:          #111111;
+    --text2:         #374151;
+    --danger:        #dc2626;
+    --danger-soft:   rgba(220,38,38,.10);
+    --warning:       #d97706;
+    --overlay:       rgba(0,0,0,.40);
+    --select-arrow:  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%234a5568'/%3E%3C/svg%3E");
+    --mono:          'DM Mono', monospace;
+    --sans:          'Syne', sans-serif;
   }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg:            #0f1511;
+      --surface:       #161e18;
+      --surface2:      #1d2a21;
+      --border:        #2e4a35;
+      --accent:        #a78bfa;
+      --accent-strong: #7c3aed;
+      --accent-soft:   rgba(167,139,250,.12);
+      --accent-line:   rgba(167,139,250,.32);
+      --accent2:       #4ade80;
+      --brand-rag:     #4ade80;
+      --on-accent:     #ffffff;
+      --muted:         #8b9a90;
+      --text:          #e6ede7;
+      --text2:         #b6c2b9;
+      --danger:        #f87171;
+      --danger-soft:   rgba(248,113,113,.12);
+      --warning:       #fbbf24;
+      --overlay:       rgba(0,0,0,.65);
+      --select-arrow:  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b9a90'/%3E%3C/svg%3E");
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:            #0f1511;
+    --surface:       #161e18;
+    --surface2:      #1d2a21;
+    --border:        #2e4a35;
+    --accent:        #a78bfa;
+    --accent-strong: #7c3aed;
+    --accent-soft:   rgba(167,139,250,.12);
+    --accent-line:   rgba(167,139,250,.32);
+    --accent2:       #4ade80;
+    --brand-rag:     #4ade80;
+    --on-accent:     #ffffff;
+    --muted:         #8b9a90;
+    --text:          #e6ede7;
+    --text2:         #b6c2b9;
+    --danger:        #f87171;
+    --danger-soft:   rgba(248,113,113,.12);
+    --warning:       #fbbf24;
+    --overlay:       rgba(0,0,0,.65);
+    --select-arrow:  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b9a90'/%3E%3C/svg%3E");
+  }
+
+  /* Smooth the switch, but not on first paint */
+  html.theme-ready body, html.theme-ready header, html.theme-ready .panel,
+  html.theme-ready .msg-bubble, html.theme-ready .input-wrap {
+    transition: background-color .2s ease, border-color .2s ease, color .2s ease;
+  }
+
+  /* ── Theme switcher ── */
+  .theme-switch {
+    display: flex; margin-left: 12px; padding: 2px; gap: 2px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface2);
+  }
+  .theme-opt {
+    font-family: var(--mono); font-size: 12px; line-height: 1;
+    width: 28px; height: 24px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .theme-opt:hover { color: var(--text); }
+  .theme-opt[aria-pressed="true"] { background: var(--surface); color: var(--accent); box-shadow: 0 0 0 1px var(--border); }
+  .theme-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--sans); }
 
@@ -52,9 +142,9 @@
     display: flex; align-items: center; gap: 6px;
   }
   .nav-btn:hover { border-color: var(--accent); color: var(--accent); }
-  .nav-btn.active { background: rgba(124,58,237,.1); border-color: var(--accent); color: var(--accent); }
+  .nav-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
   .nav-badge {
-    background: var(--accent); color: #ffffff;
+    background: var(--accent-strong); color: var(--on-accent);
     font-size: 9px; font-weight: 700;
     padding: 1px 5px; border-radius: 10px; min-width: 16px; text-align: center;
   }
@@ -92,14 +182,14 @@
   .msg { display: flex; gap: 10px; animation: fadeUp .2s ease; }
   .msg.user { flex-direction: row-reverse; }
   .msg-avatar { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
-  .msg.user .msg-avatar { background: var(--accent); color: #ffffff; }
+  .msg.user .msg-avatar { background: var(--accent-strong); color: var(--on-accent); }
   .msg.assistant .msg-avatar { background: var(--surface2); border: 1px solid var(--border); color: var(--accent); font-size: 14px; }
   .msg-body { flex: 1; min-width: 0; }
   .msg-bubble { padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.75; white-space: pre-wrap; }
-  .msg.user .msg-bubble { background: var(--accent); color: #ffffff; border-radius: 12px 2px 12px 12px; display: inline-block; float: right; max-width: 85%; }
+  .msg.user .msg-bubble { background: var(--accent-strong); color: var(--on-accent); border-radius: 12px 2px 12px 12px; display: inline-block; float: right; max-width: 85%; }
   .msg.assistant .msg-bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 2px 12px 12px 12px; clear: both; }
   .msg-sources { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; clear: both; }
-  .source-tag { font-family: var(--mono); font-size: 10px; padding: 2px 8px; background: rgba(126,232,162,.08); border: 1px solid rgba(126,232,162,.2); color: var(--accent); border-radius: 4px; }
+  .source-tag { font-family: var(--mono); font-size: 10px; padding: 2px 8px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); border-radius: 4px; }
   .typing { display: flex; gap: 4px; align-items: center; padding: 10px 14px; }
   .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce .8s infinite; }
   .typing span:nth-child(2) { animation-delay: .15s; }
@@ -108,14 +198,14 @@
   /* Input */
   .input-bar { padding: 12px 0 16px; flex-shrink: 0; }
   .input-wrap { display: flex; gap: 10px; align-items: flex-end; background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; transition: border-color .2s; }
-  .input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124,58,237,.15); }
+  .input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   textarea { flex: 1; background: none; border: none; outline: none; color: var(--text); font-family: var(--sans); font-size: 14px; resize: none; line-height: 1.5; max-height: 120px; scrollbar-width: none; }
   textarea::placeholder { color: var(--muted); }
-  .send-btn { width: 34px; height: 34px; border-radius: 8px; background: var(--accent); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: opacity .15s, transform .1s; }
+  .send-btn { width: 34px; height: 34px; border-radius: 8px; background: var(--accent-strong); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: opacity .15s, transform .1s; }
   .send-btn:hover { opacity: .85; }
   .send-btn:active { transform: scale(.95); }
   .send-btn:disabled { opacity: .3; cursor: not-allowed; }
-  .send-btn svg { width: 15px; height: 15px; fill: #ffffff; }
+  .send-btn svg { width: 15px; height: 15px; fill: var(--on-accent); }
   .input-hint { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 5px; text-align: right; }
 
   /* ── Side panel ── */
@@ -132,7 +222,7 @@
 
   /* Upload zone */
   .upload-zone { border: 1.5px dashed var(--border); border-radius: 10px; padding: 20px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; position: relative; margin-bottom: 14px; }
-  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(126,232,162,.04); }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: var(--accent-soft); }
   .upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
   .upload-icon { font-size: 28px; margin-bottom: 6px; }
   .upload-text { font-size: 12px; color: var(--text2); line-height: 1.6; }
@@ -158,14 +248,14 @@
   .file-meta { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 1px; }
   .file-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
-  .btn-index { font-family: var(--mono); font-size: 10px; padding: 3px 8px; border-radius: 5px; background: rgba(168,85,247,.1); border: 1px solid rgba(168,85,247,.3); color: var(--accent); cursor: pointer; transition: background .15s; white-space: nowrap; }
-  .btn-index:hover { background: rgba(126,232,162,.2); }
+  .btn-index { font-family: var(--mono); font-size: 10px; padding: 3px 8px; border-radius: 5px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); cursor: pointer; transition: background .15s; white-space: nowrap; }
+  .btn-index:hover { background: var(--accent-line); }
   .btn-index:disabled { opacity: .4; cursor: not-allowed; }
-  .btn-indexed { font-family: var(--mono); font-size: 10px; padding: 3px 8px; border-radius: 5px; background: rgba(126,232,162,.06); border: 1px solid rgba(126,232,162,.15); color: var(--muted); cursor: default; }
+  .btn-indexed { font-family: var(--mono); font-size: 10px; padding: 3px 8px; border-radius: 5px; background: transparent; border: 1px solid var(--border); color: var(--muted); cursor: default; }
 
   .btn-del { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 13px; padding: 3px 5px; border-radius: 4px; opacity: 0; transition: opacity .15s, background .15s; }
   .file-item:hover .btn-del { opacity: 1; }
-  .btn-del:hover { background: rgba(248,113,113,.1); }
+  .btn-del:hover { background: var(--danger-soft); }
 
   .empty-list { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: center; padding: 24px 0; line-height: 1.8; }
 
@@ -195,7 +285,7 @@
     font-family: var(--mono); font-size: 11px; color: var(--text);
     cursor: pointer; outline: none; transition: border-color .15s;
     appearance: none; -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%234a5568'/%3E%3C/svg%3E");
+    background-image: var(--select-arrow);
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 28px;
   }
@@ -204,7 +294,7 @@
 
   /* About modal */
   .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.4);
+    position: fixed; inset: 0; background: var(--overlay);
     z-index: 200; display: flex; align-items: center; justify-content: center;
     opacity: 0; pointer-events: none; transition: opacity .2s;
   }
@@ -240,7 +330,7 @@
 
   <!-- Header -->
   <header>
-    <div class="logo"><span style="color:#16a34a">Rag</span><span style="color:#9ca3af">-</span><span style="color:#7c3aed">Mind</span></div>
+    <div class="logo"><span style="color:var(--brand-rag)">Rag</span><span style="color:var(--muted)">-</span><span style="color:var(--accent)">Mind</span></div>
 
     <nav class="nav">
       <button class="nav-btn" id="btn-upload" onclick="openPanel('upload')">
@@ -258,6 +348,11 @@
       <div class="health-dot" id="health-dot"></div>
       <span class="health-label" id="health-label">checking...</span>
     </div>
+    <div class="theme-switch" role="group" aria-label="Colour theme">
+      <button class="theme-opt" data-theme-opt="light"  aria-pressed="false" title="Light"  onclick="setTheme('light')">☀</button>
+      <button class="theme-opt" data-theme-opt="system" aria-pressed="false" title="System" onclick="setTheme('system')">◐</button>
+      <button class="theme-opt" data-theme-opt="dark"   aria-pressed="false" title="Dark"   onclick="setTheme('dark')">☾</button>
+    </div>
     <button class="nav-btn" onclick="openAbout()" style="margin-left:8px">
       ℹ About
     </button>
@@ -270,7 +365,7 @@
       <div class="chat">
         <div class="messages" id="messages">
           <div class="welcome" id="welcome">
-            <div class="welcome-logo"><span style="color:#16a34a">Rag</span><span style="color:var(--muted)">-</span><span style="color:#7c3aed">Mind</span></div>
+            <div class="welcome-logo"><span style="color:var(--brand-rag)">Rag</span><span style="color:var(--muted)">-</span><span style="color:var(--accent)">Mind</span></div>
             <div class="welcome-sub">
               local RAG · no cloud · your data stays yours<br>
               upload a document and start asking questions
@@ -346,7 +441,7 @@
 <div class="modal-overlay" id="about-overlay" onclick="closeAbout()">
   <div class="modal" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="closeAbout()">✕</button>
-    <div class="modal-title"><span style="color:#16a34a">Rag</span><span style="color:var(--muted)">-</span><span style="color:#7c3aed">Mind</span></div>
+    <div class="modal-title"><span style="color:var(--brand-rag)">Rag</span><span style="color:var(--muted)">-</span><span style="color:var(--accent)">Mind</span></div>
     <div class="modal-body">
       RAG-MIND is a fully local, privacy-first document Q&A system. Users upload PDFs, EPUBs, and other documents, index them using a local embedding model, and ask natural language questions answered exclusively from document content — no cloud services, no API keys, no data leaving the machine.
     </div>
@@ -373,6 +468,24 @@
 const history = [];
 let streaming = false;
 let currentPanel = null;
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+// 'light' | 'dark' | 'system'. System = no data-theme attribute, so the CSS
+// follows the OS via prefers-color-scheme (and updates live if the OS changes).
+function getTheme() {
+  try { return localStorage.getItem('ragmind-theme') || 'system'; } catch (e) { return 'system'; }
+}
+function setTheme(t) {
+  const root = document.documentElement;
+  if (t === 'light' || t === 'dark') root.setAttribute('data-theme', t);
+  else { root.removeAttribute('data-theme'); t = 'system'; }
+  try { localStorage.setItem('ragmind-theme', t); } catch (e) {}
+  document.querySelectorAll('.theme-opt').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.themeOpt === t)));
+}
+setTheme(getTheme());
+// enable colour transitions only after the first paint
+requestAnimationFrame(() => document.documentElement.classList.add('theme-ready'));
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 function openAbout() {
@@ -418,6 +531,13 @@ async function checkHealth() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+// Escape text before putting it into HTML (filenames, sources and questions
+// come from users and must never be interpreted as markup or script).
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, ch =>
+    ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
+}
+
 function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
   return {pdf:'📄',epub:'📚',docx:'📝',txt:'📃',md:'📋'}[ext] || '📄';
@@ -449,8 +569,10 @@ async function handleFiles(files) {
     try {
       const r = await fetch('/upload', {method:'POST', body: fd});
       if (!r.ok) throw new Error(await r.text());
+      const d = await r.json();
       fill.style.width = `${Math.round(((i+1)/files.length)*100)}%`;
-      toast(`${files[i].name} uploaded`, 'success');
+      toast(d.replaced ? `${d.filename} replaced. Index it again from the Library.`
+                       : `${d.filename} uploaded`, d.replaced ? 'info' : 'success');
     } catch(e) {
       toast(`Error uploading ${files[i].name}`, 'error');
     }
@@ -474,7 +596,7 @@ async function loadRecent() {
     <div class="file-item">
       <div class="file-icon">${fileIcon(f.name)}</div>
       <div class="file-info">
-        <div class="file-name" title="${f.name}">${f.name}</div>
+        <div class="file-name" title="${esc(f.name)}">${esc(f.name)}</div>
         <div class="file-meta">${formatSize(f.size)} · ${f.indexed ? '✓ indexed' : 'not indexed'}</div>
       </div>
     </div>`).join('');
@@ -490,19 +612,19 @@ async function loadLibrary() {
     return;
   }
   list.innerHTML = d.files.map(f => `
-    <div class="file-item" id="lib-${CSS.escape(f.name)}">
+    <div class="file-item">
       <div class="idx-dot ${f.indexed ? 'yes' : 'no'}"></div>
       <div class="file-icon">${fileIcon(f.name)}</div>
       <div class="file-info">
-        <div class="file-name" title="${f.name}">${f.name}</div>
+        <div class="file-name" title="${esc(f.name)}">${esc(f.name)}</div>
         <div class="file-meta">${formatSize(f.size)}${f.indexed ? ` · ${f.chunks} chunks` : ''}</div>
       </div>
       <div class="file-actions">
         ${f.indexed
           ? `<span class="btn-indexed">✓ indexed</span>`
-          : `<button class="btn-index" onclick="indexFile('${f.name}', this)">Index</button>`
+          : `<button class="btn-index" data-name="${esc(f.name)}" onclick="indexFile(this.dataset.name, this)">Index</button>`
         }
-        <button class="btn-del" onclick="deleteFile('${f.name}')" title="Delete file">✕</button>
+        <button class="btn-del" data-name="${esc(f.name)}" onclick="deleteFile(this.dataset.name)" title="Delete file">✕</button>
       </div>
     </div>`).join('');
 }
@@ -566,11 +688,11 @@ async function loadIndexed() {
     <div class="file-item">
       <div class="file-icon">${fileIcon(doc.name)}</div>
       <div class="file-info">
-        <div class="file-name" title="${doc.name}">${doc.name}</div>
+        <div class="file-name" title="${esc(doc.name)}">${esc(doc.name)}</div>
         <div class="file-meta">${doc.chunks} chunks · ready for Q&A</div>
       </div>
       <div class="file-actions">
-        <button class="btn-del" onclick="removeFromIndex('${doc.name}')" title="Remove from index">✕</button>
+        <button class="btn-del" data-name="${esc(doc.name)}" onclick="removeFromIndex(this.dataset.name)" title="Remove from index">✕</button>
       </div>
     </div>`).join('');
 }
@@ -611,7 +733,7 @@ async function sendMessage() {
   const userDiv = document.createElement('div');
   userDiv.className = 'msg user';
   const userTime = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
-  userDiv.innerHTML = `<div class="msg-avatar">U</div><div class="msg-body"><div class="msg-bubble">${question}</div><div class="msg-time">${userTime}</div></div>`;
+  userDiv.innerHTML = `<div class="msg-avatar">U</div><div class="msg-body"><div class="msg-bubble">${esc(question)}</div><div class="msg-time">${userTime}</div></div>`;
   msgs.appendChild(userDiv);
 
   const typingDiv = document.createElement('div');
@@ -670,7 +792,7 @@ async function sendMessage() {
     }
 
     if (sources.length && sourceDiv) {
-      sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${s}</span>`).join('');
+      sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${esc(s)}</span>`).join('');
     }
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const endTimeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});

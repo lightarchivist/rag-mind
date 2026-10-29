@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # RagMind — Local RAG-powered Document Q&A CLI
 # rag_cli.py — Universal Document Q&A CLI
 # Copyright (C) 2026  Seb Szmytka
@@ -8,7 +9,6 @@
 # (at your option) any later version.
 #
 # See <https://www.gnu.org/licenses/> for details.
-#!/usr/bin/env python3
 """
 rag_cli.py — Universal RAG-powered CLI for Document Q&A
 Scales from a single paper to multiple books using Ollama.
@@ -166,18 +166,19 @@ def extract_text(path: str) -> str:
 # ─── Chunking ──────────────────────────────────────────────────────────────────
 def chunk_text(text: str, source: str) -> list[dict]:
     """Split text into overlapping chunks with metadata."""
-    text = " ".join(text.split())   # normalise whitespace
+    text = " ".join(text.split())   # normalise whitespace (so no newlines remain)
     chunks = []
     start = 0
     idx = 0
     while start < len(text):
         end = min(start + CHUNK_SIZE, len(text))
-        # try to end at a sentence boundary
-        for sep in (". ", ".\n", "? ", "! ", "\n\n"):
-            pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
-            if pos != -1:
-                end = pos + len(sep)
-                break
+        # try to end at a sentence boundary (not needed for the final chunk)
+        if end < len(text):
+            for sep in (". ", "? ", "! "):
+                pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
+                if pos != -1:
+                    end = pos + len(sep)
+                    break
         chunk = text[start:end].strip()
         if chunk:
             chunks.append({
@@ -186,7 +187,9 @@ def chunk_text(text: str, source: str) -> list[dict]:
                 "chunk_id": idx,
             })
             idx += 1
-        start = end - CHUNK_OVERLAP
+        if end >= len(text):
+            break                    # last chunk done; without this the loop never ends
+        start = max(end - CHUNK_OVERLAP, start + 1)   # always move forward
     return chunks
 
 # ─── Vector store (ChromaDB) ────────────────────────────────────────────────────
@@ -214,16 +217,26 @@ def add_document(path: str):
         return
     print(c(GREEN, f" {len(text):,} chars"))
 
+    col = get_collection()
+    abs_path = os.path.abspath(path)
+    # Chunk IDs are derived from the content hash, so identical content is
+    # detected no matter what the file is called or where it lives.
+    file_hash = hashlib.md5(text.encode()).hexdigest()[:12]
+    if col.get(ids=[f"{file_hash}_0"])["ids"]:
+        print(c(YELLOW, "  Unchanged since last indexed. Skipping."))
+        return
+
+    # New or changed content: remove any older chunks of this same file first.
+    stale = col.get(where={"path": abs_path})["ids"]
+    # Indexes built by older versions recorded only the filename, not the path.
+    legacy = col.get(where={"source": os.path.basename(path)}, include=["metadatas"])
+    stale += [i for i, m in zip(legacy["ids"], legacy["metadatas"]) if "path" not in m]
+    if stale:
+        col.delete(ids=stale)
+        print(c(YELLOW, f"  File changed: replaced {len(stale)} old chunks."))
+
     chunks = chunk_text(text, path)
     print(c(DIM, f"  Chunking → {len(chunks)} passages…"), end="", flush=True)
-
-    col = get_collection()
-    # deduplicate by file hash to avoid re-indexing same file
-    file_hash = hashlib.md5(text.encode()).hexdigest()[:12]
-    existing_ids = col.get(where={"source": os.path.basename(path)})
-    if existing_ids["ids"]:
-        print(c(YELLOW, f" already indexed ({len(existing_ids['ids'])} chunks). Skipping."))
-        return
 
     print(c(DIM, " embedding"), end="", flush=True)
     ids, embeddings, documents, metadatas = [], [], [], []
@@ -232,7 +245,8 @@ def add_document(path: str):
         ids.append(uid)
         embeddings.append(embed(ch["text"]))
         documents.append(ch["text"])
-        metadatas.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
+        metadatas.append({"source": ch["source"], "chunk_id": ch["chunk_id"],
+                          "path": abs_path, "file_hash": file_hash})
         if i % 10 == 0:
             print(".", end="", flush=True)
 
@@ -450,8 +464,8 @@ def main():
     p_folder = sub.add_parser("folder", help="Index all documents in a folder")
 
     p_folder.add_argument("path", metavar="FOLDER", nargs="?",
-                      default="/home/seb/GIT/RagMind/pdf",
-                      help="Path to folder (default: /home/seb/GIT/RagMind/pdf)")
+                      default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdf"),
+                      help="Path to folder (default: the pdf/ folder next to this script)")
 
     p_folder.add_argument("--recursive", "-r", action="store_true",
                           help="Also scan sub-folders")

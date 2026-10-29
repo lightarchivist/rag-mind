@@ -3,8 +3,8 @@ fastapi>=0.111.0
 uvicorn>=0.30.0
 python-multipart>=0.0.9   # file uploads
 
-# RAG core
-chromadb>=0.5.0
+# RAG core (the web app uses its own numpy index, not ChromaDB)
+numpy>=1.26
 pypdf>=4.0.0
 python-docx>=1.1.0
 ebooklib>=0.18
