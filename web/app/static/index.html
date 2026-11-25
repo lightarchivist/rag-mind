@@ -291,6 +291,15 @@
   }
   .doc-selector:focus { border-color: var(--accent); }
   .doc-selector option { background: var(--surface2); }
+  .model-selector { flex: 0 1 200px; }
+
+  /* Notice banner (e.g. index needs rebuilding) */
+  .notice { display: none; align-items: center; gap: 10px; margin: 10px 0 0; padding: 8px 12px;
+    border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 8px;
+    font-family: var(--mono); font-size: 11px; color: var(--text2); }
+  .notice.show { display: flex; }
+  .notice span { flex: 1; }
+  .msg-note { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-bottom: 4px; }
 
   /* About modal */
   .modal-overlay {
@@ -363,6 +372,10 @@
     <!-- Centered chat -->
     <div class="chat-wrap">
       <div class="chat">
+        <div class="notice" id="reindex-notice">
+          <span id="reindex-text"></span>
+          <button class="btn-index" id="reindex-btn" onclick="rebuildIndex()">Rebuild index</button>
+        </div>
         <div class="messages" id="messages">
           <div class="welcome" id="welcome">
             <div class="welcome-logo"><span style="color:var(--brand-rag)">Rag</span><span style="color:var(--muted)">-</span><span style="color:var(--accent)">Mind</span></div>
@@ -383,6 +396,11 @@
           <span class="doc-selector-label">CONTEXT:</span>
           <select class="doc-selector" id="doc-selector" onchange="updateSelector()">
             <option value="">All indexed documents</option>
+          </select>
+          <span class="doc-selector-label">MODEL:</span>
+          <select class="doc-selector model-selector" id="model-selector" onchange="chooseModel()"
+                  title="Installed Ollama chat models">
+            <option value="">loading…</option>
           </select>
         </div>
 
@@ -406,9 +424,9 @@
         <div id="pane-upload" style="display:none;flex-direction:column;height:100%">
           <div class="panel-title">⬆ <span>Upload Files</span></div>
           <div class="upload-zone" id="upload-zone">
-            <input type="file" id="file-input" accept=".pdf,.epub,.docx,.txt,.md" multiple>
+            <input type="file" id="file-input" accept=".pdf,.epub,.docx,.txt,.md,.rst,.html,.htm" multiple>
             <div class="upload-icon">📂</div>
-            <div class="upload-text"><strong>Click or drop files here</strong><br>PDF · EPUB · DOCX · TXT · MD</div>
+            <div class="upload-text"><strong>Click or drop files here</strong><br>PDF · EPUB · DOCX · TXT · MD · RST · HTML</div>
           </div>
           <div class="progress-wrap" id="progress-wrap">
             <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
@@ -525,9 +543,83 @@ async function checkHealth() {
     const d = await r.json();
     const dot = document.getElementById('health-dot');
     const lbl = document.getElementById('health-label');
-    if (d.ollama) { dot.classList.add('ok'); lbl.textContent = d.model; }
-    else { lbl.textContent = 'ollama offline'; }
+    if (d.ollama) {
+      dot.classList.add('ok');
+      lbl.textContent = selectedModel() || d.model;
+      if (!modelsLoaded) loadModels();
+    } else { dot.classList.remove('ok'); lbl.textContent = 'ollama offline'; }
+    showReindexNotice(d.needs_reindex, d.rebuild);
   } catch { document.getElementById('health-label').textContent = 'offline'; }
+}
+
+// ── Models ────────────────────────────────────────────────────────────────────
+let modelsLoaded = false;
+function selectedModel() { return document.getElementById('model-selector').value; }
+
+async function loadModels() {
+  const sel = document.getElementById('model-selector');
+  try {
+    const r = await fetch('/models');
+    if (!r.ok) throw new Error((await r.json()).detail);
+    const d = await r.json();
+    let saved = '';
+    try { saved = localStorage.getItem('ragmind-model') || ''; } catch (e) {}
+    sel.innerHTML = '';
+    d.models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.name;
+      const ctx = m.context_length ? ` · ${Math.round(m.context_length / 1024)}K` : '';
+      opt.textContent = `${m.name}${m.parameter_size ? ' · ' + m.parameter_size : ''}${ctx}`;
+      sel.appendChild(opt);
+    });
+    if (!d.models.length) {
+      sel.innerHTML = '<option value="">no chat models — run: ollama pull llama3</option>';
+    }
+    const names = d.models.map(m => m.name);
+    sel.value = names.includes(saved) ? saved : (names.includes(d.default) ? d.default : (names[0] || ''));
+    modelsLoaded = true;
+    document.getElementById('health-label').textContent = sel.value || d.default;
+  } catch (e) {
+    sel.innerHTML = '<option value="">models unavailable</option>';
+  }
+}
+
+function chooseModel() {
+  const name = selectedModel();
+  try { localStorage.setItem('ragmind-model', name); } catch (e) {}
+  document.getElementById('health-label').textContent = name;
+  toast(`Answers will now come from ${name}`, 'info');
+}
+
+// ── Rebuild notice ────────────────────────────────────────────────────────────
+let rebuildPoll = null;
+function showReindexNotice(reason, rebuild) {
+  const box = document.getElementById('reindex-notice');
+  const btn = document.getElementById('reindex-btn');
+  const text = document.getElementById('reindex-text');
+  if (rebuild && rebuild.status === 'rebuilding') {
+    box.classList.add('show'); btn.disabled = true;
+    text.textContent = `Rebuilding the index… ${rebuild.done}/${rebuild.total} documents`;
+    if (!rebuildPoll) rebuildPoll = setInterval(checkHealth, 2000);
+    return;
+  }
+  if (rebuildPoll) { clearInterval(rebuildPoll); rebuildPoll = null; }
+  if (rebuild && rebuild.status === 'error') {
+    box.classList.add('show'); btn.disabled = false;
+    text.textContent = `Rebuild failed: ${rebuild.error}. The previous index is unchanged.`;
+  } else if (reason) {
+    box.classList.add('show'); btn.disabled = false;
+    text.textContent = `The index needs rebuilding: ${reason}. Questions can't be answered until then.`;
+  } else {
+    box.classList.remove('show');
+  }
+}
+
+async function rebuildIndex() {
+  const r = await fetch('/reindex', {method: 'POST'});
+  if (!r.ok) { toast((await r.json()).detail || 'Could not start the rebuild', 'error'); return; }
+  toast('Rebuilding the index…', 'info');
+  checkHealth();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -568,13 +660,16 @@ async function handleFiles(files) {
     fd.append('file', files[i]);
     try {
       const r = await fetch('/upload', {method:'POST', body: fd});
-      if (!r.ok) throw new Error(await r.text());
+      if (!r.ok) {
+        let detail = ''; try { detail = (await r.json()).detail; } catch {}
+        throw new Error(detail || `Error ${r.status}`);
+      }
       const d = await r.json();
       fill.style.width = `${Math.round(((i+1)/files.length)*100)}%`;
       toast(d.replaced ? `${d.filename} replaced. Index it again from the Library.`
                        : `${d.filename} uploaded`, d.replaced ? 'info' : 'success');
     } catch(e) {
-      toast(`Error uploading ${files[i].name}`, 'error');
+      toast(`Error uploading ${files[i].name}: ${e.message}`, 'error');
     }
   }
 
@@ -617,7 +712,7 @@ async function loadLibrary() {
       <div class="file-icon">${fileIcon(f.name)}</div>
       <div class="file-info">
         <div class="file-name" title="${esc(f.name)}">${esc(f.name)}</div>
-        <div class="file-meta">${formatSize(f.size)}${f.indexed ? ` · ${f.chunks} chunks` : ''}</div>
+        <div class="file-meta">${formatSize(f.size)}${f.indexed ? ` · ${f.chunks} chunks` : ''}${f.error ? ` · ⚠ ${esc(f.error)}` : ''}</div>
       </div>
       <div class="file-actions">
         ${f.indexed
@@ -669,7 +764,8 @@ async function indexFile(name, btn) {
 
 async function deleteFile(name) {
   if (!confirm(`Delete "${name}" from library and index?`)) return;
-  await fetch(`/files/${encodeURIComponent(name)}`, {method:'DELETE'});
+  const r = await fetch(`/files/${encodeURIComponent(name)}`, {method:'DELETE'});
+  if (!r.ok) { toast((await r.json()).detail || `Could not delete ${name}`, 'error'); return; }
   toast(`${name} deleted`, 'success');
   updateBadges();
   loadLibrary();
@@ -699,7 +795,8 @@ async function loadIndexed() {
 
 async function removeFromIndex(name) {
   if (!confirm(`Remove "${name}" from index? (File stays in library)`)) return;
-  await fetch(`/documents/${encodeURIComponent(name)}`, {method:'DELETE'});
+  const r = await fetch(`/documents/${encodeURIComponent(name)}`, {method:'DELETE'});
+  if (!r.ok) { toast((await r.json()).detail || `Could not remove ${name}`, 'error'); return; }
   toast(`${name} removed from index`, 'success');
   updateBadges();
   loadIndexed();
@@ -745,15 +842,43 @@ async function sendMessage() {
   document.getElementById('send-btn').disabled = true;
   streaming = true;
 
-  let answer = '', sources = [], bubble = null, sourceDiv = null;
+  let answer = '', sources = [], bubble = null, sourceDiv = null, header = null;
   const startTime = Date.now();
-  const startTimeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+
+  // Create the assistant bubble (once), optionally with a small note above it.
+  function openBubble(note) {
+    typingDiv.remove();
+    const div = document.createElement('div');
+    div.className = 'msg assistant';
+    div.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-body"></div>`;
+    const body = div.querySelector('.msg-body');
+    if (note) {
+      const n = document.createElement('div');
+      n.className = 'msg-note'; n.textContent = note;
+      body.appendChild(n);
+    }
+    bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    sourceDiv = document.createElement('div');
+    sourceDiv.className = 'msg-sources';
+    body.appendChild(bubble);
+    body.appendChild(sourceDiv);
+    msgs.appendChild(div);
+  }
 
   try {
     const resp = await fetch('/chat/stream', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({question, history: history.slice(-4), filter_source: document.getElementById('doc-selector').value})
+      body: JSON.stringify({question, history: history.slice(-4), model: selectedModel(),
+                            filter_source: document.getElementById('doc-selector').value})
     });
+    if (!resp.ok) {
+      let detail = `Error ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch {}
+      openBubble();
+      bubble.textContent = detail;
+      throw 'shown';
+    }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -767,20 +892,13 @@ async function sendMessage() {
       if (!headerDone) {
         const nl = buffer.indexOf('\n');
         if (nl === -1) continue;
-        try { sources = JSON.parse(buffer.substring(0, nl)).sources || []; } catch {}
-        buffer = buffer.substring(nl + 1);
+        try { header = JSON.parse(buffer.substring(0, nl)); } catch { header = null; }
+        if (header) {
+          sources = header.sources || [];
+          buffer = buffer.substring(nl + 1);
+        }
         headerDone = true;
-        typingDiv.remove();
-        const div = document.createElement('div');
-        div.className = 'msg assistant';
-        sourceDiv = document.createElement('div');
-        sourceDiv.className = 'msg-sources';
-        bubble = document.createElement('div');
-        bubble.className = 'msg-bubble';
-        div.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-body"></div>`;
-        div.querySelector('.msg-body').appendChild(bubble);
-        div.querySelector('.msg-body').appendChild(sourceDiv);
-        msgs.appendChild(div);
+        openBubble(header && header.search_query ? `searched for: ${header.search_query}` : '');
       }
 
       if (bubble && buffer) {
@@ -790,26 +908,30 @@ async function sendMessage() {
         msgs.scrollTop = msgs.scrollHeight;
       }
     }
+    // A plain message without a header line (e.g. "No documents indexed yet").
+    if (!headerDone) { openBubble(); answer = buffer; bubble.textContent = answer; }
 
     if (sources.length && sourceDiv) {
       sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${esc(s)}</span>`).join('');
     }
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const endTimeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
-    if (bubble) {
-      const timeDiv = document.createElement('div');
-      timeDiv.className = 'msg-time';
-      timeDiv.textContent = `${endTimeStr} · ${elapsed}s`;
-      bubble.parentNode.insertBefore(timeDiv, sourceDiv);
-    }
-    history.push({q: question, a: answer});
+    const model = header && header.model ? ` · ${header.model}` : '';
+    const timeDiv = document.createElement('div');
+    timeDiv.className = 'msg-time';
+    timeDiv.textContent = `${endTimeStr} · ${elapsed}s${model}`;
+    bubble.parentNode.insertBefore(timeDiv, sourceDiv);
+    // Only real answers become conversation context; errors and notices don't.
+    if (header && !answer.includes('[ERROR:')) history.push({q: question, a: answer});
 
-  } catch {
-    typingDiv?.remove();
-    const div = document.createElement('div');
-    div.className = 'msg assistant';
-    div.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-body"><div class="msg-bubble">Connection error. Is Ollama running?</div></div>`;
-    msgs.appendChild(div);
+  } catch (e) {
+    if (e !== 'shown') {
+      typingDiv?.remove();
+      const div = document.createElement('div');
+      div.className = 'msg assistant';
+      div.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-body"><div class="msg-bubble">Connection error. Is the server running?</div></div>`;
+      msgs.appendChild(div);
+    }
   }
 
   streaming = false;
@@ -860,7 +982,7 @@ function toast(msg, type='success') {
   setTimeout(() => el.remove(), 3500);
 }
 
-checkHealth(); setInterval(checkHealth, 30000); updateBadges(); refreshSelector(); setInterval(refreshSelector, 10000);
+loadModels(); checkHealth(); setInterval(checkHealth, 30000); updateBadges(); refreshSelector(); setInterval(refreshSelector, 10000);
 </script>
 </body>
 </html>

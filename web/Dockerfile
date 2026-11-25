@@ -1,11 +1,15 @@
+# Build from the repository root (the image needs the shared ragmind/ package):
+#   docker build -f web/Dockerfile -t lightarchivist/rag-mind .
+# or from web/:  docker compose up --build -d
 FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements-web.txt .
+COPY web/requirements-web.txt .
 RUN pip install --no-cache-dir -r requirements-web.txt
 
-COPY app/ ./
+COPY ragmind/ ./ragmind/
+COPY web/app/ ./
 
 EXPOSE 8000
 

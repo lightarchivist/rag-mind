@@ -1,0 +1,5 @@
+# Tests:  pip install -r requirements-dev.txt  &&  python -m pytest
+-r requirements.txt
+pytest>=8.0
+numpy>=1.26                # the web app's index (also in web/requirements-web.txt)
+pydantic>=2.0

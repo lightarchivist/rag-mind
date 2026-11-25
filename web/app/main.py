@@ -1,143 +1,80 @@
 """
 RAG-MIND Web — FastAPI backend
-Lightweight RAG using numpy, no ChromaDB.
-Background indexing with progress tracking and gc.
+Lightweight RAG using a numpy index (no ChromaDB), sharing its pipeline with
+the CLI through the `ragmind` package. Background indexing with progress.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, StreamingResponse
-from pydantic import BaseModel
-import os, json, shutil, pickle, time, threading, gc
+import json
+import os
+import shutil
+import sys
+import threading
 from typing import Iterator
-import numpy as np
 
-OLLAMA_BASE   = os.getenv("OLLAMA_BASE", "http://host.docker.internal:11434")
-LLM_MODEL     = os.getenv("LLM_MODEL",   "llama3")
-EMBED_MODEL   = os.getenv("EMBED_MODEL", "nomic-embed-text")
-DATA_DIR      = os.getenv("DATA_DIR",    "/data")
-UPLOAD_DIR    = os.path.join(DATA_DIR, "uploads")
-INDEX_FILE    = os.path.join(DATA_DIR, "index.pkl")
-STATIC_DIR    = os.path.join(os.path.dirname(__file__), "static")
-CHUNK_SIZE    = 500
-CHUNK_OVERLAP = 80
-TOP_K         = 6
-BATCH_SIZE    = 3
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+try:
+    import ragmind  # noqa: F401  (installed next to this file in Docker)
+except ImportError:                       # running from a git checkout: use the repo copy
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
+from ragmind import pipeline
+from ragmind.chunking import chunk_pages
+from ragmind.config import Settings, load_settings
+from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
+from ragmind.numpy_index import NumpyIndex
+from ragmind.ollama import ModelNotFound, NotAChatModel, OllamaClient, OllamaError, short
+from ragmind.prompt import cite
+
+DATA_DIR   = os.getenv("DATA_DIR", "/data")
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+INDEX_DIR  = DATA_DIR                    # index.npz + index.json (was index.pkl)
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+settings = load_settings(Settings(ollama_base="http://host.docker.internal:11434"),
+                         config_path=os.getenv("RAGMIND_CONFIG") or os.path.join(DATA_DIR, "config.json"))
+ollama = OllamaClient(settings.ollama_base, timeout=settings.timeout)
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(DATA_DIR,   exist_ok=True)
 
-import urllib.request, urllib.error
+# ─── Index (kept in memory, saved after every change) ─────────────────────────
+index_lock = threading.RLock()
+_index: NumpyIndex | None = None
+indexing_status: dict[str, dict] = {}
+rebuild_status = {"status": "idle", "done": 0, "total": 0, "error": ""}
 
-# ─── Indexing progress tracker ────────────────────────────────────────────────
-indexing_status = {}
-index_lock = threading.Lock()
 
-# ─── Simple numpy vector index ────────────────────────────────────────────────
-class VectorIndex:
-    def __init__(self):
-        self.embeddings = []
-        self.documents  = []
-        self.metadatas  = []
+def get_index() -> NumpyIndex:
+    global _index
+    with index_lock:
+        if _index is None:
+            _index = NumpyIndex.load(INDEX_DIR)
+        return _index
 
-    def add(self, embeddings, documents, metadatas):
-        self.embeddings.extend([np.array(e) for e in embeddings])
-        self.documents.extend(documents)
-        self.metadatas.extend(metadatas)
 
-    def query(self, query_embedding, n=TOP_K, source_filter=""):
-        if not self.embeddings:
-            return []
-        q = np.array(query_embedding)
-        if source_filter:
-            indices = [i for i, m in enumerate(self.metadatas) if m["source"] == source_filter]
-            if not indices:
-                return []
-            matrix = np.stack([self.embeddings[i] for i in indices])
-            norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(q)
-            norms = np.where(norms == 0, 1e-10, norms)
-            scores = matrix.dot(q) / norms
-            top_idx = np.argsort(scores)[::-1][:n]
-            return [
-                {"text": self.documents[indices[i]], "source": self.metadatas[indices[i]]["source"], "score": round(float(scores[i]), 3)}
-                for i in top_idx
-            ]
-        matrix = np.stack(self.embeddings)
-        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(q)
-        norms = np.where(norms == 0, 1e-10, norms)
-        scores = matrix.dot(q) / norms
-        top_idx = np.argsort(scores)[::-1][:n]
-        return [
-            {"text": self.documents[i], "source": self.metadatas[i]["source"], "score": round(float(scores[i]), 3)}
-            for i in top_idx
-        ]
+def index_problem() -> str | None:
+    idx = get_index()
+    if len(idx) == 0:
+        return None
+    return pipeline.signature_problem(idx.signature, settings)
 
-    def sources(self):
-        counts = {}
-        for m in self.metadatas:
-            counts[m["source"]] = counts.get(m["source"], 0) + 1
-        return counts
 
-    def delete_source(self, source):
-        keep = [i for i, m in enumerate(self.metadatas) if m["source"] != source]
-        self.embeddings = [self.embeddings[i] for i in keep]
-        self.documents  = [self.documents[i]  for i in keep]
-        self.metadatas  = [self.metadatas[i]  for i in keep]
+def _chunk_meta(name, ch):
+    meta = {"source": name, "chunk_id": ch.chunk_id}
+    if ch.page is not None:
+        meta["page"] = ch.page
+    return meta
 
-def load_index() -> VectorIndex:
-    if os.path.exists(INDEX_FILE):
-        with open(INDEX_FILE, "rb") as f:
-            return pickle.load(f)
-    return VectorIndex()
 
-def save_index(idx: VectorIndex):
-    with open(INDEX_FILE, "wb") as f:
-        pickle.dump(idx, f)
+# ─── Ollama errors → HTTP ─────────────────────────────────────────────────────
+def http_error(e: OllamaError) -> HTTPException:
+    if isinstance(e, (ModelNotFound, NotAChatModel)):
+        return HTTPException(400, str(e))
+    return HTTPException(503, str(e))
 
-# ─── Ollama ───────────────────────────────────────────────────────────────────
-def _post(endpoint, payload):
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        f"{OLLAMA_BASE}{endpoint}", data=data,
-        headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return json.loads(r.read())
-    except urllib.error.URLError as e:
-        raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {e}")
-
-def embed(text):
-    data = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode()
-    req = urllib.request.Request(
-        f"{OLLAMA_BASE}/api/embeddings", data=data,
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=60) as r:
-        resp = json.loads(r.read())
-    return resp["embedding"]
-
-# A plain (sync) generator: StreamingResponse runs it in a worker thread, so the
-# blocking urllib read doesn't freeze the server for everyone else.
-def stream_ollama(prompt: str) -> Iterator[str]:
-    data = json.dumps({
-        "model": LLM_MODEL, "prompt": prompt, "stream": True,
-        "options": {"temperature": 0.1, "num_ctx": 4096},
-    }).encode()
-    req = urllib.request.Request(
-        f"{OLLAMA_BASE}/api/generate", data=data,
-        headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            for line in r:
-                line = line.strip()
-                if not line: continue
-                chunk = json.loads(line)
-                tok = chunk.get("response", "")
-                if tok:
-                    yield tok
-                if chunk.get("done"):
-                    break
-    except OSError as e:          # URLError, timeouts, dropped connections
-        yield f"\n[ERROR: {e}]"
 
 # ─── Upload paths ─────────────────────────────────────────────────────────────
 def safe_filename(name: str) -> str:
@@ -150,6 +87,7 @@ def safe_filename(name: str) -> str:
         raise HTTPException(400, "Invalid file name")
     return name
 
+
 def upload_path(name: str) -> str:
     """Full path for a file in UPLOAD_DIR; refuses anything that would land elsewhere."""
     path = os.path.join(UPLOAD_DIR, safe_filename(name))
@@ -157,141 +95,83 @@ def upload_path(name: str) -> str:
         raise HTTPException(400, "Invalid file name")
     return path
 
-# ─── Text extraction ──────────────────────────────────────────────────────────
-def extract_text(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".pdf":
-        from pypdf import PdfReader
-        r = PdfReader(path)
-        return "\n\n".join(p.extract_text() or "" for p in r.pages)
-    elif ext == ".docx":
-        import docx
-        doc = docx.Document(path)
-        return "\n".join(p.text for p in doc.paragraphs)
-    elif ext in (".txt", ".md"):
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
-    elif ext == ".epub":
-        import ebooklib
-        from ebooklib import epub
-        from bs4 import BeautifulSoup as BS
-        book = epub.read_epub(path)
-        parts = []
-        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
-            soup = BS(item.get_body_content(), "html.parser")
-            parts.append(soup.get_text())
-        return "\n\n".join(parts)
-    else:
-        raise ValueError(f"Unsupported: {ext}")
-
-# ─── Chunking (infinite loop safe) ───────────────────────────────────────────
-def chunk_text(text, source):
-    text = " ".join(text.split())
-    chunks, start, idx = [], 0, 0
-    while start < len(text):
-        end = min(start + CHUNK_SIZE, len(text))
-        if end < len(text):
-            for sep in (". ", "? ", "! ", "\n\n"):
-                pos = text.rfind(sep, start + CHUNK_SIZE // 2, end)
-                if pos != -1:
-                    end = pos + len(sep)
-                    break
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append({"text": chunk, "source": os.path.basename(source), "chunk_id": idx})
-            idx += 1
-        if end >= len(text):
-            break                     # otherwise the tail gets indexed again as an extra chunk
-        next_start = end - CHUNK_OVERLAP
-        if next_start <= start:
-            next_start = start + CHUNK_SIZE
-        start = next_start
-    return chunks
 
 # ─── Background indexing ──────────────────────────────────────────────────────
 def index_file_background(path: str):
-    filename = os.path.basename(path)
+    name = os.path.basename(path)
     try:
-        indexing_status[filename] = {"status": "indexing", "progress": 0, "chunks": 0}
-        print(f"DEBUG: Starting indexing {filename}", flush=True)
-
-        text = extract_text(path)
-        print(f"DEBUG: Extracted {len(text)} chars", flush=True)
-
-        if not text.strip():
-            indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": "Empty file"}
+        indexing_status[name] = {"status": "indexing", "progress": 0, "chunks": 0}
+        why = index_problem()
+        if why:
+            raise ValueError(f"The index needs rebuilding first ({why}).")
+        if name in get_index().sources():
+            indexing_status[name] = {"status": "done", "progress": 100,
+                                     "chunks": get_index().sources()[name]}
             return
 
-        # check if already indexed without lock
-        idx = load_index()
-        already_indexed = filename in idx.sources()
-        chunks_count = idx.sources().get(filename, 0)
-        del idx
-        gc.collect()
+        chunks = chunk_pages(extract_pages(path), settings.chunk_size, settings.chunk_overlap)
+        if not chunks:
+            raise ValueError("No text found (scanned PDFs need OCR first)")
 
-        if already_indexed:
-            indexing_status[filename] = {"status": "done", "progress": 100, "chunks": chunks_count}
-            print(f"DEBUG: Already indexed, skipping", flush=True)
-            return
+        def progress(done, total):
+            indexing_status[name] = {"status": "indexing", "progress": int(done / total * 100), "chunks": done}
 
-        print(f"DEBUG: Chunking text...", flush=True)
-        chunks = chunk_text(text, path)
-        del text
-        gc.collect()
-        print(f"DEBUG: Got {len(chunks)} chunks", flush=True)
-        total = len(chunks)
-        batch_emb, batch_doc, batch_meta = [], [], []
-
-        for i, ch in enumerate(chunks):
-            print(f"DEBUG: Embedding chunk {i}/{total}", flush=True)
-            batch_emb.append(embed(ch["text"]))
-            batch_doc.append(ch["text"])
-            batch_meta.append({"source": ch["source"], "chunk_id": ch["chunk_id"]})
-
-            progress = int((i + 1) / total * 100)
-            indexing_status[filename] = {"status": "indexing", "progress": progress, "chunks": i + 1}
-
-            if (i + 1) % BATCH_SIZE == 0:
-                with index_lock:
-                    idx = load_index()
-                    idx.add(batch_emb, batch_doc, batch_meta)
-                    save_index(idx)
-                    del idx
-                batch_emb, batch_doc, batch_meta = [], [], []
-                gc.collect()
-                time.sleep(0.1)
-
-        if batch_emb:
-            with index_lock:
-                idx = load_index()
-                idx.add(batch_emb, batch_doc, batch_meta)
-                save_index(idx)
-                del idx
-            gc.collect()
-
-        indexing_status[filename] = {"status": "done", "progress": 100, "chunks": total}
-        print(f"DEBUG: Done indexing {filename} — {total} chunks", flush=True)
-
-    except Exception as e:
-        print(f"DEBUG: ERROR — {e}", flush=True)
+        # Embed everything first; the index only changes once all of it worked.
+        vectors = pipeline.embed_documents(ollama, settings, [ch.text for ch in chunks], progress)
+        with index_lock:
+            idx = get_index()
+            if len(idx) == 0:
+                idx.signature = pipeline.index_signature(settings)
+            idx.delete_source(name)
+            idx.add(vectors, [ch.text for ch in chunks], [_chunk_meta(name, ch) for ch in chunks])
+            idx.save(INDEX_DIR)
+        indexing_status[name] = {"status": "done", "progress": 100, "chunks": len(chunks)}
+    except (ExtractionError, OllamaError, ValueError, OSError) as e:
+        indexing_status[name] = {"status": "error", "progress": 0, "chunks": 0, "error": str(e)}
+    except Exception as e:                     # keep the server up; report the problem
         import traceback; traceback.print_exc()
-        indexing_status[filename] = {"status": "error", "progress": 0, "chunks": 0, "error": str(e)}
+        indexing_status[name] = {"status": "error", "progress": 0, "chunks": 0, "error": str(e)}
+
+
+def rebuild_background():
+    """Re-embed every indexed document with the current settings. Files still in
+    the upload folder are re-read (gaining page numbers); others keep their
+    stored text. The live index is replaced only when everything succeeded."""
+    global _index
+    try:
+        old = get_index()
+        sources = sorted(old.sources())
+        rebuild_status.update(status="rebuilding", done=0, total=len(sources), error="")
+        new = NumpyIndex(pipeline.index_signature(settings))
+        for name in sources:
+            path = os.path.join(UPLOAD_DIR, name)
+            if os.path.isfile(path):
+                chunks = chunk_pages(extract_pages(path), settings.chunk_size, settings.chunk_overlap)
+                texts, metas = [ch.text for ch in chunks], [_chunk_meta(name, ch) for ch in chunks]
+            else:
+                rows = old.chunks_of(name)
+                texts = [d for d, _ in rows]
+                metas = [dict(m, chunk_id=i) for i, (_, m) in enumerate(rows)]
+            new.add(pipeline.embed_documents(ollama, settings, texts), texts, metas)
+            rebuild_status["done"] += 1
+        with index_lock:
+            new.save(INDEX_DIR)
+            _index = new
+        rebuild_status["status"] = "done"
+    except Exception as e:
+        rebuild_status.update(status="error", error=str(e))
+
 
 # ─── FastAPI ──────────────────────────────────────────────────────────────────
-app = FastAPI(title="RAG-MIND", version="1.0")
+app = FastAPI(title="RAG-MIND", version="2.0")
 
-SYSTEM = """You are a document analysis assistant.
-Answer questions ONLY using the retrieved passages below.
-Rules:
-1. Base your answer solely on the provided passages.
-2. If the answer is not in the passages, say: "This information is not found in the indexed documents."
-3. Cite the source filename when relevant.
-4. Do not use outside knowledge."""
 
 class ChatRequest(BaseModel):
     question: str
     history: list = []
     filter_source: str = ""
+    model: str = ""
+
 
 # Endpoints that touch the disk or Ollama are plain `def`, so FastAPI runs them
 # in a worker thread instead of blocking the event loop for every other user.
@@ -301,38 +181,33 @@ def root():
     with open(os.path.join(STATIC_DIR, "index.html"), encoding="utf-8") as f:
         return f.read()
 
+
 @app.post("/upload")
 def upload_file(file: UploadFile = File(...)):
-    allowed = {".pdf", ".epub", ".docx", ".txt", ".md"}
     dest = upload_path(file.filename)
     name = os.path.basename(dest)
     ext = os.path.splitext(name)[1].lower()
-    if ext not in allowed:
+    if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported type: {ext}")
     if indexing_status.get(name, {}).get("status") == "indexing":
         raise HTTPException(409, f"{name} is being indexed right now; try again when it finishes")
+    refuse_during_rebuild()
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     # A re-uploaded file may have new content, so drop its old chunks;
     # the user then re-indexes it from the Library.
-    replaced = False
     with index_lock:
-        idx = load_index()
-        if name in idx.sources():
-            idx.delete_source(name)
-            save_index(idx)
-            replaced = True
-        del idx
+        idx = get_index()
+        replaced = idx.delete_source(name) > 0
+        if replaced:
+            idx.save(INDEX_DIR)
     indexing_status.pop(name, None)
-    size = os.path.getsize(dest)
-    return {"filename": name, "size": size, "status": "uploaded", "replaced": replaced}
+    return {"filename": name, "size": os.path.getsize(dest), "status": "uploaded", "replaced": replaced}
+
 
 @app.get("/files")
 def list_files():
-    with index_lock:
-        idx = load_index()
-    indexed = idx.sources()
-    del idx
+    indexed = get_index().sources()
     files = []
     for fname in sorted(os.listdir(UPLOAD_DIR)):
         fpath = os.path.join(UPLOAD_DIR, fname)
@@ -345,14 +220,17 @@ def list_files():
                 "chunks": indexed.get(fname, 0),
                 "indexing_status": status.get("status", "idle"),
                 "indexing_progress": status.get("progress", 0),
+                "error": status.get("error", ""),
             })
     return {"files": files}
+
 
 @app.post("/index/{filename}")
 def index_document(filename: str, background_tasks: BackgroundTasks):
     fpath = upload_path(filename)
     if not os.path.isfile(fpath):
         raise HTTPException(404, f"File not found: {filename}")
+    refuse_during_rebuild()
     name = os.path.basename(fpath)
     if indexing_status.get(name, {}).get("status") == "indexing":
         return {"filename": name, "status": "already_indexing"}
@@ -361,84 +239,119 @@ def index_document(filename: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(index_file_background, fpath)
     return {"filename": name, "status": "started"}
 
+
 @app.get("/index/status/{filename}")
-async def index_status(filename: str):
+def index_status(filename: str):
     status = indexing_status.get(filename, {"status": "idle", "progress": 0, "chunks": 0})
     return {"filename": filename, **status}
 
+
+@app.post("/reindex")
+def reindex(background_tasks: BackgroundTasks):
+    if rebuild_status["status"] == "rebuilding":
+        return {"status": "already_rebuilding"}
+    if any(s.get("status") == "indexing" for s in indexing_status.values()):
+        raise HTTPException(409, "A file is being indexed; try again when it finishes")
+    rebuild_status.update(status="rebuilding", done=0, total=len(get_index().sources()), error="")
+    background_tasks.add_task(rebuild_background)
+    return {"status": "started"}
+
+
+@app.get("/reindex/status")
+def reindex_status():
+    return dict(rebuild_status)
+
+
 @app.get("/documents")
 def list_documents():
-    with index_lock:
-        idx = load_index()
-    sources = idx.sources()
-    del idx
+    sources = get_index().sources()
     return {"documents": [{"name": k, "chunks": v} for k, v in sorted(sources.items())]}
+
+
+def refuse_during_rebuild():
+    if rebuild_status["status"] == "rebuilding":
+        raise HTTPException(409, "The index is being rebuilt; try again when it finishes")
+
 
 @app.delete("/documents/{filename}")
 def delete_document(filename: str):
+    refuse_during_rebuild()
     with index_lock:
-        idx = load_index()
-        if filename not in idx.sources():
+        idx = get_index()
+        if not idx.delete_source(filename):
             raise HTTPException(404, "Document not found in index")
-        idx.delete_source(filename)
-        save_index(idx)
+        idx.save(INDEX_DIR)
     return {"deleted": filename}
+
 
 @app.delete("/files/{filename}")
 def delete_file(filename: str):
+    refuse_during_rebuild()
     fpath = upload_path(filename)
     if not os.path.isfile(fpath):
         raise HTTPException(404, "File not found")
     name = os.path.basename(fpath)
     with index_lock:
-        idx = load_index()
-        if name in idx.sources():
-            idx.delete_source(name)
-            save_index(idx)
+        idx = get_index()
+        if idx.delete_source(name):
+            idx.save(INDEX_DIR)
     os.remove(fpath)
     indexing_status.pop(name, None)
     return {"deleted": name}
 
+
+@app.get("/models")
+def list_models():
+    """Installed chat models (embedding models are left out)."""
+    try:
+        models = ollama.chat_models()
+    except OllamaError as e:
+        raise http_error(e)
+    return {"models": [m.to_dict() for m in models], "default": short(settings.llm_model)}
+
+
 @app.post("/chat/stream")
 def chat_stream(req: ChatRequest):
-    with index_lock:
-        idx = load_index()
-    if not idx.embeddings:
+    if len(get_index()) == 0:
         return StreamingResponse(iter(["No documents indexed yet. Upload a file and click Index."]),
                                  media_type="text/plain")
-
+    why = index_problem()
+    if why:
+        return StreamingResponse(iter([f"The index needs rebuilding ({why}). "
+                                       "Click “Rebuild index” at the top of the page."]),
+                                 media_type="text/plain")
     try:
-        q_emb = embed(req.question)
-    except OSError as e:
-        raise HTTPException(503, f"Cannot reach Ollama: {e}")
-    chunks = idx.query(q_emb, n=TOP_K, source_filter=req.filter_source)
-    del idx
+        model = ollama.resolve_chat_model(req.model or settings.llm_model)
 
-    context = "\n\n".join(
-        f"[{i+1}] (source: {ch['source']}, relevance: {ch['score']})\n{ch['text']}"
-        for i, ch in enumerate(chunks))
+        def search(vector, n):
+            with index_lock:
+                return get_index().query(vector, n, source_filter=req.filter_source)
 
-    history_text = ""
-    for h in req.history[-4:]:
-        history_text += f"User: {h['q']}\nAssistant: {h['a']}\n"
+        history = [h for h in req.history if isinstance(h, dict)]
+        prepared = pipeline.prepare(ollama, settings, model.name, req.question, history, search)
+    except OllamaError as e:
+        raise http_error(e)
 
-    prompt = f"{SYSTEM}\n\n=== RETRIEVED PASSAGES ===\n{context}\n=== END ===\n\n{history_text}User: {req.question}\nAssistant:"
-    sources = list({ch["source"] for ch in chunks})
+    header = {"sources": list(dict.fromkeys(cite(ch) for ch in prepared.chunks)),
+              "model": short(model.name)}
+    if prepared.search_query != req.question:
+        header["search_query"] = prepared.search_query
 
-    def generate():
-        yield json.dumps({"sources": sources}) + "\n"
-        yield from stream_ollama(prompt)
+    def generate() -> Iterator[str]:
+        yield json.dumps(header) + "\n"
+        try:
+            yield from ollama.generate_stream(model.name, prepared.prompt,
+                                              pipeline.generation_options(prepared.num_ctx))
+        except OllamaError as e:
+            yield f"\n[ERROR: {e}]"
 
     return StreamingResponse(generate(), media_type="text/plain")
 
+
 @app.get("/health")
 def health():
-    try:
-        req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            ollama_ok = r.status == 200
-    except Exception:
-        ollama_ok = False
-    return {"ollama": ollama_ok, "model": LLM_MODEL}
+    return {"ollama": ollama.ping(), "model": short(settings.llm_model),
+            "needs_reindex": index_problem(), "rebuild": dict(rebuild_status)}
+
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

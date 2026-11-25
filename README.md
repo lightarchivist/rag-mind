@@ -17,7 +17,8 @@ What started as a small assignment at ATU has grown into a fully functional loca
 
 -  Upload PDF, EPUB, DOCX, TXT, Markdown
 -  Semantic search using nomic-embed-text embeddings
--  Streaming answers grounded strictly in your documents
+-  Streaming answers grounded strictly in your documents, citing file and page
+-  Switch between any chat models installed in Ollama
 -  Index multiple documents, switch context per conversation
 -  Access from any device on your local network
 -  100% local — nothing leaves your machine
@@ -107,11 +108,20 @@ chmod +x start.sh && ./start.sh
 
 ```
 rag-mind/
-├── rag_cli.py              ← CLI version
+├── ragmind/                ← Shared core used by the CLI and the web app
+│   ├── config.py           ← Settings (defaults → config file → env vars)
+│   ├── ollama.py           ← Ollama client: models, embeddings, streaming, clear errors
+│   ├── extract.py          ← PDF / DOCX / EPUB / HTML / text extraction (with page numbers)
+│   ├── chunking.py         ← Overlapping, sentence-aware chunks
+│   ├── prompt.py           ← Prompt building within the model's context window
+│   ├── pipeline.py         ← Retrieval: follow-up rewriting, search, filtering, grading
+│   └── numpy_index.py      ← The web app's vector index
+├── rag_cli.py              ← CLI version (ChromaDB)
 ├── requirements.txt        ← CLI dependencies
 ├── start.sh                ← Startup script
+├── tests/                  ← Offline tests (fake Ollama; no models needed)
 ├── web/                    ← Web app (Docker)
-│   ├── Dockerfile
+│   ├── Dockerfile          ← build from the repo root: docker build -f web/Dockerfile .
 │   ├── docker-compose.yml
 │   ├── requirements-web.txt
 │   └── app/
@@ -128,12 +138,69 @@ rag-mind/
 ```bash
 source venv/bin/activate
 
-python rag_cli.py add paper.pdf
-python rag_cli.py folder ./my_papers
-python rag_cli.py chat
+python rag_cli.py add paper.pdf book.epub     # a bad file is reported and skipped
+python rag_cli.py folder ./my_papers -r
+python rag_cli.py chat                        # or: chat --model qwen2.5
 python rag_cli.py list
-python rag_cli.py clear
+python rag_cli.py reindex                     # rebuild after upgrading or changing EMBED_MODEL
+python rag_cli.py clear                       # asks first; --yes to skip
 ```
+
+Answers cite the file (and page, for PDFs). Follow-up questions such as
+"and its weight?" are rewritten into a full question before searching, and the
+rewritten search is shown.
+
+### Choosing the model
+
+Any chat model installed in Ollama can answer questions:
+
+```bash
+python rag_cli.py models                      # installed chat models, * = current
+python rag_cli.py models --default qwen2.5    # remember a default
+python rag_cli.py chat --model mistral        # this session only
+```
+
+Inside a chat, `/model` lists the models and `/model qwen2.5` switches (and
+remembers the choice). In the web app, use the **MODEL** menu under the chat.
+To get more models: `ollama pull <name>` (see https://ollama.com/library).
+
+The embedding model (`EMBED_MODEL`, default `nomic-embed-text`) is different:
+changing it makes the existing index unusable, so RagMind detects the change and
+asks you to rebuild (`reindex` in the CLI, **Rebuild index** in the web app).
+
+### Settings
+
+Environment variables override `~/.ragmind/config.json` (the web app reads
+`$DATA_DIR/config.json`).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OLLAMA_BASE` | `http://localhost:11434` | Ollama address |
+| `LLM_MODEL` | `llama3` | Default chat model |
+| `EMBED_MODEL` | `nomic-embed-text` | Embedding model (changing it needs a rebuild) |
+| `RAG_CLI_DB` | `~/.rag_cli_db` | CLI index folder |
+| `RAGMIND_MAX_CTX` | `8192` | Largest context window to request (more = more memory) |
+| `RAGMIND_TOP_K` | `6` | Passages retrieved per question |
+| `RAGMIND_MIN_SCORE` | `0.25` | Ignore passages less similar than this |
+| `RAGMIND_REWRITE` | `1` | Rewrite follow-up questions before searching |
+| `RAGMIND_GRADE` | `0` | Ask the model to filter passages (more accurate, slower) |
+| `RAGMIND_TIMEOUT` | `600` | Seconds to wait for Ollama |
+
+### Upgrading from 1.x
+
+Indexes built by earlier versions are detected and must be rebuilt once
+(`python rag_cli.py reindex`, or **Rebuild index** in the web app), because
+vectors are now made with the embedding model's task prefixes, which improves
+search. Files that have moved keep their stored text.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The tests use a fake Ollama server, so no models are needed.
 
 ---
 
