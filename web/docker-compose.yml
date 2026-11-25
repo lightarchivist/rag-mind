@@ -3,6 +3,7 @@ services:
     build:
       context: ..                  # repo root, so the image can include ragmind/
       dockerfile: web/Dockerfile
+      network: host
     container_name: ragmind
     mem_limit: 2g
     memswap_limit: 4g
