@@ -232,3 +232,4 @@ venv/
 .DS_Store
 ragmind-data/
 */uploads/
+web/docker-compose.override.yml
