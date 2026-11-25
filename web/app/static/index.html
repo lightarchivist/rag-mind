@@ -153,6 +153,22 @@
   .health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); transition: background .3s; }
   .health-dot.ok { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
   .health-label { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .health-label:empty { display: none; }
+
+  /* Model picker, beside the status light */
+  .model-select {
+    max-width: 230px; min-width: 0;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 26px 4px 8px;
+    font-family: var(--mono); font-size: 11px; color: var(--text);
+    cursor: pointer; outline: none; transition: border-color .15s;
+    appearance: none; -webkit-appearance: none;
+    background-image: var(--select-arrow);
+    background-repeat: no-repeat; background-position: right 8px center;
+    text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+  }
+  .model-select:hover, .model-select:focus { border-color: var(--accent); }
+  .model-select option { background: var(--surface2); }
 
   /* ── Main area ── */
   .body { flex: 1; display: flex; overflow: hidden; }
@@ -280,7 +296,9 @@
   }
   .doc-selector-label { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
   .doc-selector {
-    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    flex: 1; min-width: 0;            /* long document names must not push the bar wider */
+    text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+    background: var(--surface2); border: 1px solid var(--border);
     border-radius: 8px; padding: 5px 10px;
     font-family: var(--mono); font-size: 11px; color: var(--text);
     cursor: pointer; outline: none; transition: border-color .15s;
@@ -291,7 +309,6 @@
   }
   .doc-selector:focus { border-color: var(--accent); }
   .doc-selector option { background: var(--surface2); }
-  .model-selector { flex: 0 1 200px; }
 
   /* Notice banner (e.g. index needs rebuilding) */
   .notice { display: none; align-items: center; gap: 10px; margin: 10px 0 0; padding: 8px 12px;
@@ -355,7 +372,11 @@
 
     <div class="health-wrap">
       <div class="health-dot" id="health-dot"></div>
-      <span class="health-label" id="health-label">checking...</span>
+      <select class="model-select" id="model-selector" onchange="chooseModel()"
+              title="Chat model that answers your questions (installed in Ollama)">
+        <option value="">loading…</option>
+      </select>
+      <span class="health-label" id="health-label"></span>
     </div>
     <div class="theme-switch" role="group" aria-label="Colour theme">
       <button class="theme-opt" data-theme-opt="light"  aria-pressed="false" title="Light"  onclick="setTheme('light')">☀</button>
@@ -396,11 +417,6 @@
           <span class="doc-selector-label">CONTEXT:</span>
           <select class="doc-selector" id="doc-selector" onchange="updateSelector()">
             <option value="">All indexed documents</option>
-          </select>
-          <span class="doc-selector-label">MODEL:</span>
-          <select class="doc-selector model-selector" id="model-selector" onchange="chooseModel()"
-                  title="Installed Ollama chat models">
-            <option value="">loading…</option>
           </select>
         </div>
 
@@ -543,13 +559,24 @@ async function checkHealth() {
     const d = await r.json();
     const dot = document.getElementById('health-dot');
     const lbl = document.getElementById('health-label');
+    const sel = document.getElementById('model-selector');
     if (d.ollama) {
       dot.classList.add('ok');
-      lbl.textContent = selectedModel() || d.model;
+      dot.title = 'Ollama is running';
+      lbl.textContent = '';
+      sel.style.display = '';
       if (!modelsLoaded) loadModels();
-    } else { dot.classList.remove('ok'); lbl.textContent = 'ollama offline'; }
+    } else {
+      dot.classList.remove('ok');
+      dot.title = 'Ollama is not reachable';
+      lbl.textContent = 'ollama offline';
+      sel.style.display = 'none';
+    }
     showReindexNotice(d.needs_reindex, d.rebuild);
-  } catch { document.getElementById('health-label').textContent = 'offline'; }
+  } catch {
+    document.getElementById('health-label').textContent = 'offline';
+    document.getElementById('model-selector').style.display = 'none';
+  }
 }
 
 // ── Models ────────────────────────────────────────────────────────────────────
@@ -568,8 +595,11 @@ async function loadModels() {
     d.models.forEach(m => {
       const opt = document.createElement('option');
       opt.value = m.name;
+      // Hugging Face models are named hf.co/<user>/<repo>; the repo part is enough to show.
+      const shown = m.name.startsWith('hf.co/') ? m.name.split('/').pop() : m.name;
       const ctx = m.context_length ? ` · ${Math.round(m.context_length / 1024)}K` : '';
-      opt.textContent = `${m.name}${m.parameter_size ? ' · ' + m.parameter_size : ''}${ctx}`;
+      opt.textContent = `${shown}${m.parameter_size ? ' · ' + m.parameter_size : ''}${ctx}`;
+      opt.title = m.name;
       sel.appendChild(opt);
     });
     if (!d.models.length) {
@@ -578,7 +608,7 @@ async function loadModels() {
     const names = d.models.map(m => m.name);
     sel.value = names.includes(saved) ? saved : (names.includes(d.default) ? d.default : (names[0] || ''));
     modelsLoaded = true;
-    document.getElementById('health-label').textContent = sel.value || d.default;
+    sel.title = `Chat model: ${sel.value}`;
   } catch (e) {
     sel.innerHTML = '<option value="">models unavailable</option>';
   }
@@ -587,7 +617,7 @@ async function loadModels() {
 function chooseModel() {
   const name = selectedModel();
   try { localStorage.setItem('ragmind-model', name); } catch (e) {}
-  document.getElementById('health-label').textContent = name;
+  document.getElementById('model-selector').title = `Chat model: ${name}`;
   toast(`Answers will now come from ${name}`, 'info');
 }
 
