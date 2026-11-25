@@ -35,7 +35,7 @@ brew install ollama
 ollama pull llama3
 ollama pull nomic-embed-text
 
-git clone git@github.com:lightarchivist/rag-mind.git
+git clone https://github.com/lightarchivist/rag-mind.git
 cd rag-mind
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt -r web/requirements-web.txt
@@ -83,7 +83,7 @@ sudo usermod -aG docker $USER && newgrp docker
 
 **3. Clone the repo**
 ```bash
-git clone git@github.com:lightarchivist/rag-mind.git
+git clone https://github.com/lightarchivist/rag-mind.git
 cd rag-mind
 ```
 
@@ -94,6 +94,13 @@ docker compose up --build -d
 ```
 
 Open `http://localhost:8000` or `http://<your-ip>:8000`
+
+To build the image yourself instead (from the repo root):
+```bash
+docker build --network=host -f web/Dockerfile -t lightarchivist/rag-mind:latest .
+```
+`--network=host` avoids `pip install` timeouts that some Linux setups hit inside
+Docker builds; the compose file already uses it.
 
 **4b. Run without Docker**
 ```bash
@@ -161,7 +168,8 @@ python rag_cli.py chat --model mistral        # this session only
 ```
 
 Inside a chat, `/model` lists the models and `/model qwen2.5` switches (and
-remembers the choice). In the web app, use the **MODEL** menu under the chat.
+remembers the choice). In the web app, pick the model from the menu beside the
+status light at the top of the page; your choice is remembered in the browser.
 To get more models: `ollama pull <name>` (see https://ollama.com/library).
 
 The embedding model (`EMBED_MODEL`, default `nomic-embed-text`) is different:
