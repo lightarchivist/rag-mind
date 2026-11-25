@@ -310,6 +310,24 @@ def list_models():
     return {"models": [m.to_dict() for m in models], "default": short(settings.llm_model)}
 
 
+class IndexCorpus:
+    """The web index seen as a set of documents (for broad questions)."""
+
+    def keys(self):
+        with index_lock:
+            return sorted(get_index().sources())
+
+    def search(self, vector, n, key=None):
+        with index_lock:
+            return get_index().query(vector, n, source_filter=key or "")
+
+    def opening(self, key, n):
+        with index_lock:
+            rows = get_index().chunks_of(key)[:n]
+        return [{"text": text, "source": m["source"], "page": m.get("page"), "score": None}
+                for text, m in rows]
+
+
 @app.post("/chat/stream")
 def chat_stream(req: ChatRequest):
     if len(get_index()) == 0:
@@ -328,7 +346,11 @@ def chat_stream(req: ChatRequest):
                 return get_index().query(vector, n, source_filter=req.filter_source)
 
         history = [h for h in req.history if isinstance(h, dict)]
-        prepared = pipeline.prepare(ollama, settings, model.name, req.question, history, search)
+        # Broad questions ("compare the documents") draw on every document,
+        # unless the user limited the chat to one document.
+        corpus = None if req.filter_source else IndexCorpus()
+        prepared = pipeline.prepare(ollama, settings, model.name, req.question, history, search,
+                                    corpus=corpus)
     except OllamaError as e:
         raise http_error(e)
 
@@ -336,6 +358,8 @@ def chat_stream(req: ChatRequest):
               "model": short(model.name)}
     if prepared.search_query != req.question:
         header["search_query"] = prepared.search_query
+    if prepared.broad:
+        header["documents"] = len({ch["source"] for ch in prepared.chunks})
 
     def generate() -> Iterator[str]:
         yield json.dumps(header) + "\n"

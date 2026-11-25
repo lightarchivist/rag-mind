@@ -187,3 +187,15 @@ def test_path_traversal_still_refused(web):
     with pytest.raises(HTTPException):
         web.upload_path("../../etc/passwd/..")
     assert web.safe_filename("../../evil.txt") == "evil.txt"
+
+
+def test_broad_question_covers_every_document(web, ollama):
+    upload(web, "a.txt", "Abstract. Hierarchical agents for cyber-physical security. " * 10)
+    upload(web, "b.txt", "Abstract. SDN and AI for industrial IoT networks. " * 10)
+    index(web, "a.txt"); index(web, "b.txt")
+    head, _ = chat(web, "tell me about those documents in low level")
+    assert head["documents"] == 2
+    assert any(s.startswith("a.txt") for s in head["sources"]) and any(s.startswith("b.txt") for s in head["sources"])
+    # Limited to one document with CONTEXT: normal search, no broad mode.
+    head, _ = chat(web, "tell me about those documents", filter_source="a.txt")
+    assert "documents" not in head and all(s.startswith("a.txt") for s in head["sources"])

@@ -928,7 +928,10 @@ async function sendMessage() {
           buffer = buffer.substring(nl + 1);
         }
         headerDone = true;
-        openBubble(header && header.search_query ? `searched for: ${header.search_query}` : '');
+        const notes = [];
+        if (header && header.search_query) notes.push(`searched for: ${header.search_query}`);
+        if (header && header.documents) notes.push(`passages from all ${header.documents} documents`);
+        openBubble(notes.join(' · '));
       }
 
       if (bubble && buffer) {

@@ -194,22 +194,52 @@ class ChromaStore:
         return list(zip(got["ids"], got["metadatas"]))
 
     # ── search ──
-    def search(self, vector, n) -> list[dict]:
-        n = min(n, self.count())
+    def search(self, vector, n, key=None) -> list[dict]:
+        """Closest chunks overall, or within one document (`key` from keys())."""
+        where, limit = None, self.count()
+        if key is not None:
+            doc = self._doc(key)
+            if doc is None:
+                return []
+            where = {"path": doc["path"]} if doc["path"] else {"source": doc["source"]}
+            limit = doc["chunks"]
+        n = min(n, limit)
         if n < 1:
             return []
-        res = self.col.query(query_embeddings=[vector], n_results=n,
+        res = self.col.query(query_embeddings=[vector], n_results=n, where=where,
                              include=["documents", "metadatas", "distances"])
         return [{"text": doc, "source": meta.get("source", "?"), "page": meta.get("page"),
                  "score": 1 - dist}
                 for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0])]
+
+    # ── corpus interface for broad questions (see pipeline.prepare) ──
+    def keys(self) -> list[str]:
+        self._docs = {d["path"] or d["source"]: d for d in self.documents()}
+        return list(self._docs)
+
+    def _doc(self, key):
+        if not getattr(self, "_docs", None) or key not in self._docs:
+            self.keys()
+        return self._docs.get(key)
+
+    def opening(self, key, n) -> list[dict]:
+        """The first n chunks of a document (usually its title and abstract)."""
+        doc = self._doc(key)
+        if not doc or not doc.get("file_hash"):
+            return []
+        got = self.col.get(ids=[f"{doc['file_hash']}_{i}" for i in range(n)],
+                           include=["documents", "metadatas"])
+        rows = sorted(zip(got["documents"], got["metadatas"]), key=lambda r: r[1].get("chunk_id", 0))
+        return [{"text": text, "source": m.get("source", "?"), "page": m.get("page"), "score": None}
+                for text, m in rows]
 
     # ── listing ──
     def documents(self) -> list[dict]:
         groups = {}
         for _, m in self._rows():
             key = m.get("path") or m.get("source", "?")
-            g = groups.setdefault(key, {"source": m.get("source", "?"), "path": m.get("path"), "chunks": 0})
+            g = groups.setdefault(key, {"source": m.get("source", "?"), "path": m.get("path"),
+                                        "file_hash": m.get("file_hash"), "chunks": 0})
             g["chunks"] += 1
         docs = sorted(groups.values(), key=lambda d: (d["source"].lower(), d["path"] or ""))
         names = [d["source"] for d in docs]
@@ -468,9 +498,13 @@ Commands:
 
 def answer_question(store, ollama, settings, model: ModelInfo, question, history) -> str | None:
     """Retrieve, prompt and stream one answer. Returns the answer, or None on failure."""
-    prepared = pipeline.prepare(ollama, settings, model.name, question, history, store.search)
+    prepared = pipeline.prepare(ollama, settings, model.name, question, history, store.search,
+                                corpus=store)
     if prepared.search_query != question:
         print(c(DIM, f"  (searched for: {prepared.search_query})"))
+    if prepared.broad:
+        docs = len({ch["source"] for ch in prepared.chunks})
+        print(c(DIM, f"  (question about the documents as a whole: passages from all {docs})"))
     if prepared.chunks:
         cited = list(dict.fromkeys(cite(ch) for ch in prepared.chunks))
         print(c(DIM, f"  [{'; '.join(cited)}] — {len(prepared.chunks)} passages"))

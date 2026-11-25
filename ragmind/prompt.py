@@ -30,7 +30,9 @@ def cite(chunk: dict) -> str:
 
 
 def format_passage(i: int, chunk: dict) -> str:
-    return f"[{i}] (source: {cite(chunk)}, relevance: {chunk['score']:.2f})\n{chunk['text']}"
+    score = chunk.get("score")
+    relevance = f", relevance: {score:.2f}" if score is not None else ""
+    return f"[{i}] (source: {cite(chunk)}{relevance})\n{chunk['text']}"
 
 
 def _turn(h: dict) -> str:
@@ -41,11 +43,13 @@ def _turn(h: dict) -> str:
 
 
 def build_prompt(question: str, chunks: list[dict], history: list[dict],
-                 ctx_tokens: int, answer_reserve: int = 1024, history_turns: int = 4):
-    """Return (prompt, chunks_used, turns_used) fitting in ctx_tokens - answer_reserve."""
+                 ctx_tokens: int, answer_reserve: int = 1024, history_turns: int = 4,
+                 note: str = ""):
+    """Return (prompt, chunks_used, turns_used) fitting in ctx_tokens - answer_reserve.
+    `note` is an extra line placed just above the passages."""
     budget = max(ctx_tokens - answer_reserve, 256)
     tail = f"User: {question}\nAssistant:"
-    used = estimate_tokens(SYSTEM) + estimate_tokens(tail) + 40   # section markers
+    used = estimate_tokens(SYSTEM) + estimate_tokens(tail) + estimate_tokens(note) + 40
 
     recent = [h for h in (history or [])[-history_turns:] if h.get("q")]
     turns = [_turn(h) for h in recent]
@@ -72,7 +76,8 @@ def build_prompt(question: str, chunks: list[dict], history: list[dict],
     parts = [SYSTEM]
     if kept_turns:
         parts.append("=== CONVERSATION SO FAR ===\n" + "\n".join(kept_turns))
-    parts.append(f"=== RETRIEVED PASSAGES ===\n{context}\n=== END PASSAGES ===")
+    lead = f"{note}\n\n" if note else ""
+    parts.append(f"=== RETRIEVED PASSAGES ===\n{lead}{context}\n=== END PASSAGES ===")
     parts.append(tail)
     return "\n\n".join(parts), passages, len(kept_turns)
 

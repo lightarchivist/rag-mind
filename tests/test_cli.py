@@ -274,3 +274,31 @@ def test_env_override_is_mentioned(cli, env, monkeypatch, capsys):
     monkeypatch.setenv("LLM_MODEL", "llama3")
     cli.main(["models", "--default", "qwen2.5:7b"])
     assert "LLM_MODEL environment variable is set" in capsys.readouterr().out
+
+
+# ── broad questions ───────────────────────────────────────────────────────────
+PAPER_A = ("Abstract. We propose a hierarchical multi-agent framework for cyber-physical security. " * 3 +
+           "The round-table protocol resolves conflicts between subsystem supervisors. " * 8 +
+           "Author contributions: Conceptualization, Data curation, Funding acquisition, Formal analysis. " * 3)
+PAPER_B = ("Abstract. Software-defined networking with AI improves industrial IoT security. " * 3 +
+           "Controllers detect anomalies in flow tables and reroute traffic. " * 8)
+
+
+def test_broad_question_covers_both_papers(cli, env, ollama, monkeypatch, capsys):
+    cli.main(["add", write(env / "a.txt", PAPER_A), write(env / "b.txt", PAPER_B)])
+    capsys.readouterr()
+    run_chat(cli, monkeypatch, ["summarise / compare the documents"])
+    out = capsys.readouterr().out
+    assert "passages from all 2" in out
+    prompt = ollama.calls("/api/generate")[-1]["prompt"]
+    assert "source: a.txt" in prompt and "source: b.txt" in prompt
+    assert "Abstract. We propose" in prompt and "Abstract. Software-defined" in prompt
+    assert "Funding acquisition" not in prompt
+    assert "The passages come from 2 documents" in prompt
+
+
+def test_specific_question_uses_normal_search(cli, env, ollama, monkeypatch, capsys):
+    cli.main(["add", write(env / "a.txt", PAPER_A), write(env / "b.txt", PAPER_B)])
+    run_chat(cli, monkeypatch, ["How do controllers detect anomalies in flow tables?"])
+    assert "passages from all" not in capsys.readouterr().out
+    assert "The passages come from" not in ollama.calls("/api/generate")[-1]["prompt"]

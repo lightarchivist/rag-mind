@@ -309,3 +309,84 @@ def test_legacy_pickle_refuses_other_code(tmp_path):
         pickle.dump(Evil(), f)
     with pytest.raises(pickle.UnpicklingError):
         NumpyIndex.load(str(tmp_path))
+
+
+# ── broad questions ("summarise / compare the documents") ─────────────────────
+@pytest.mark.parametrize("q", [
+    "tell me about those documents in low level",
+    "summarise / compare the documents",
+    "Compare the two papers",
+    "What do these papers have in common?",
+    "How do the documents differ?",
+    "Summarize each paper",
+    "give me an overview",
+    "summarise",
+    "what is this all about?",
+    "What are both papers about?",
+])
+def test_broad_questions_detected(q):
+    assert pipeline.is_broad(q)
+
+
+@pytest.mark.parametrize("q", [
+    "What are the main findings of the SDN paper?",
+    "What does the hierarchical framework consist of?",
+    "Which datasets were used?",
+    "What are its limitations?",
+    "Who did the funding acquisition?",
+    "Summarise the evaluation results of the round-table protocol in detail",
+])
+def test_specific_questions_not_broad(q):
+    assert not pipeline.is_broad(q)
+
+
+def test_boilerplate_detection():
+    credit = ("Diego Russo: Writing – review & editing, Visualization, Validation, Supervision. "
+              "Anna: Funding acquisition, Formal analysis, Data curation, Conceptualization.")
+    assert pipeline.is_boilerplate(credit)
+    assert pipeline.is_boilerplate("References [1] A. Smith, Agents for security, 2024.")
+    assert not pipeline.is_boilerplate("We ran a formal analysis and validation of the software agents.")
+
+
+class FakeCorpus:
+    def __init__(self, docs):
+        self.docs = docs            # name -> list of chunk texts
+    def keys(self):
+        return list(self.docs)
+    def search(self, vector, n, key=None):
+        names = [key] if key else list(self.docs)
+        hits = [{"text": t, "source": k, "page": i + 1, "score": 0.9 - i / 100}
+                for k in names for i, t in enumerate(reversed(self.docs[k]))]
+        return sorted(hits, key=lambda h: -h["score"])[:n]
+    def opening(self, key, n):
+        return [{"text": t, "source": key, "page": i + 1, "score": None}
+                for i, t in enumerate(self.docs[key][:n])]
+
+
+def test_broad_question_uses_every_document(ollama):
+    corpus = FakeCorpus({
+        "a.pdf": ["Abstract A: hierarchical agents.", "Intro A.", "Method A.",
+                  "Author contributions: Conceptualization, Data curation, Funding acquisition."],
+        "b.pdf": ["Abstract B: SDN for industrial IoT.", "Intro B.", "Results B."],
+    })
+    prepared = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3",
+                                "summarise / compare the documents", [],
+                                lambda v, n: corpus.search(v, n), corpus=corpus)
+    assert prepared.broad
+    texts = [c["text"] for c in prepared.chunks]
+    assert texts[:2] == ["Abstract A: hierarchical agents.", "Abstract B: SDN for industrial IoT."]
+    assert {c["source"] for c in prepared.chunks} == {"a.pdf", "b.pdf"}
+    assert not any("Conceptualization" in t for t in texts)
+    assert "The passages come from 2 documents: a.pdf; b.pdf" in prepared.prompt
+
+
+def test_specific_question_and_single_document_stay_normal(ollama):
+    corpus = FakeCorpus({"a.pdf": ["Abstract A."], "b.pdf": ["Abstract B."]})
+    client = OllamaClient(ollama.url)
+    p = pipeline.prepare(client, Settings(), "llama3", "Which datasets were used?", [],
+                         lambda v, n: corpus.search(v, n), corpus=corpus)
+    assert not p.broad
+    one = FakeCorpus({"a.pdf": ["Abstract A."]})
+    p = pipeline.prepare(client, Settings(), "llama3", "summarise the documents", [],
+                         lambda v, n: one.search(v, n), corpus=one)
+    assert not p.broad
