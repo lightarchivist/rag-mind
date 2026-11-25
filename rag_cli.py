@@ -40,7 +40,7 @@ import sys
 import textwrap
 import time
 
-from ragmind import pipeline
+from ragmind import pipeline, thinking
 from ragmind.chunking import chunk_pages
 from ragmind.config import ENV, Settings, default_config_path, load_settings, save_setting
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
@@ -512,10 +512,16 @@ def answer_question(store, ollama, settings, model: ModelInfo, question, history
         print(c(DIM, "  No passages matched closely; the model will say if it can't answer."))
 
     print(c(CYAN, f"\n{short(model.name)} › "), end="", flush=True)
+    hold = thinking.reasons_unseparated(model)
+    if hold:
+        print(c(DIM, "(thinking…) "), end="", flush=True)
     t0, parts = time.time(), []
     try:
-        for tok in ollama.generate_stream(model.name, prepared.prompt,
-                                          pipeline.generation_options(prepared.num_ctx)):
+        tokens = ollama.generate_stream(model.name, prepared.prompt,
+                                        pipeline.generation_options(prepared.num_ctx))
+        for tok in thinking.visible(tokens, hold=hold):
+            if hold and not parts:
+                print()                         # answer starts on the line below "(thinking…)"
             print(tok, end="", flush=True)
             parts.append(tok)
     except OllamaError as e:

@@ -317,6 +317,8 @@
   .notice.show { display: flex; }
   .notice span { flex: 1; }
   .msg-note { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .msg-bubble.thinking { color: var(--muted); font-style: italic; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
 
   /* About modal */
   .modal-overlay {
@@ -932,10 +934,13 @@ async function sendMessage() {
         if (header && header.search_query) notes.push(`searched for: ${header.search_query}`);
         if (header && header.documents) notes.push(`passages from all ${header.documents} documents`);
         openBubble(notes.join(' · '));
+        // Reasoning models think silently first; show that instead of an empty bubble.
+        if (header && header.thinking) { bubble.textContent = 'thinking…'; bubble.classList.add('thinking'); }
       }
 
       if (bubble && buffer) {
         answer += buffer;
+        bubble.classList.remove('thinking');
         bubble.textContent = answer;
         buffer = '';
         msgs.scrollTop = msgs.scrollHeight;

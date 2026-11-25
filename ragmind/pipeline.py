@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import prompt as P
+from . import thinking
 from .config import Settings
 from .ollama import OllamaClient, OllamaError, normalize
 
@@ -78,10 +79,11 @@ def rewrite_followup(client: OllamaClient, model: str, question: str,
         return question
     try:
         reply = client.generate(model, P.build_rewrite_prompt(question, history),
-                                {"temperature": 0, "num_predict": 80, "num_ctx": num_ctx})
+                                {"temperature": 0, "num_predict": _reply_budget(model, 80),
+                                 "num_ctx": num_ctx})
     except OllamaError:
         return question
-    line = _first_answer_line(reply)
+    line = _first_answer_line(thinking.strip(reply))
     if not line or len(line) > max(300, 4 * len(question)):
         return question
     return line
@@ -111,12 +113,19 @@ def grade_chunks(client: OllamaClient, model: str, question: str,
     for ch in chunks:
         try:
             reply = client.generate(model, P.build_grade_prompt(question, ch["text"]),
-                                    {"temperature": 0, "num_predict": 3, "num_ctx": min(num_ctx, 2048)})
+                                    {"temperature": 0, "num_predict": _reply_budget(model, 3),
+                                     "num_ctx": min(num_ctx, 2048)})
         except OllamaError:
             return chunks
+        reply = thinking.strip(reply)
         if reply.strip().lstrip("*_\"' ").lower().startswith("yes"):
             kept.append(ch)
     return kept or chunks
+
+
+def _reply_budget(model: str, short_reply: int) -> int:
+    """Reasoning models think before answering, so short replies need room."""
+    return 1024 if thinking._REASONING_NAME.search(model) else short_reply
 
 
 def select(results: list[dict], top_k: int, min_score: float) -> list[dict]:

@@ -302,3 +302,14 @@ def test_specific_question_uses_normal_search(cli, env, ollama, monkeypatch, cap
     run_chat(cli, monkeypatch, ["How do controllers detect anomalies in flow tables?"])
     assert "passages from all" not in capsys.readouterr().out
     assert "The passages come from" not in ollama.calls("/api/generate")[-1]["prompt"]
+
+
+def test_reasoning_model_thinking_is_hidden_in_cli(cli, env, ollama, monkeypatch, capsys):
+    ollama.models.append({"name": "deepseek-r1:8b", "family": "qwen2", "parameter_size": "8B",
+                          "capabilities": ["completion"], "context_length": 32768, "size": 1})
+    cli.main(["add", write(env / "laptops.txt", BOOK)])
+    ollama.answer = "<think> Let me check the passages. </think> The battery lasts 14 hours."
+    run_chat(cli, monkeypatch, ["battery?", "/history"], "--model", "deepseek-r1:8b")
+    out = capsys.readouterr().out
+    assert "(thinking…)" in out and "The battery lasts 14 hours." in out
+    assert "Let me check the passages" not in out

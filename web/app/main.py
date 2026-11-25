@@ -21,7 +21,7 @@ try:
 except ImportError:                       # running from a git checkout: use the repo copy
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from ragmind import pipeline
+from ragmind import pipeline, thinking
 from ragmind.chunking import chunk_pages
 from ragmind.config import Settings, load_settings
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
@@ -360,12 +360,16 @@ def chat_stream(req: ChatRequest):
         header["search_query"] = prepared.search_query
     if prepared.broad:
         header["documents"] = len({ch["source"] for ch in prepared.chunks})
+    hold = thinking.reasons_unseparated(model)
+    if hold:
+        header["thinking"] = True       # the page shows "thinking…" until the answer starts
 
     def generate() -> Iterator[str]:
         yield json.dumps(header) + "\n"
         try:
-            yield from ollama.generate_stream(model.name, prepared.prompt,
-                                              pipeline.generation_options(prepared.num_ctx))
+            tokens = ollama.generate_stream(model.name, prepared.prompt,
+                                            pipeline.generation_options(prepared.num_ctx))
+            yield from thinking.visible(tokens, hold=hold)
         except OllamaError as e:
             yield f"\n[ERROR: {e}]"
 

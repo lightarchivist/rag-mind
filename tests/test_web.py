@@ -199,3 +199,13 @@ def test_broad_question_covers_every_document(web, ollama):
     # Limited to one document with CONTEXT: normal search, no broad mode.
     head, _ = chat(web, "tell me about those documents", filter_source="a.txt")
     assert "documents" not in head and all(s.startswith("a.txt") for s in head["sources"])
+
+
+def test_reasoning_model_thinking_is_hidden(web, ollama):
+    ollama.models.append({"name": "hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF:latest", "family": "llama",
+                          "parameter_size": "8.03B", "capabilities": ["completion"], "context_length": 131072, "size": 1})
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    ollama.answer = "Alright, let's tackle this user query. </think> The battery lasts 14 hours."
+    head, answer = chat(web, "battery?", model="hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF")
+    assert head["thinking"] is True
+    assert answer == "The battery lasts 14 hours."

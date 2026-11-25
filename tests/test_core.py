@@ -390,3 +390,52 @@ def test_specific_question_and_single_document_stay_normal(ollama):
     p = pipeline.prepare(client, Settings(), "llama3", "summarise the documents", [],
                          lambda v, n: one.search(v, n), corpus=one)
     assert not p.broad
+
+
+# ── reasoning models: hide the thinking ───────────────────────────────────────
+from ragmind import thinking
+from ragmind.ollama import ModelInfo
+
+
+def run_filter(text, hold, size=3):
+    tokens = [text[i:i + size] for i in range(0, len(text), size)]   # tags split across tokens
+    return "".join(thinking.visible(tokens, hold=hold))
+
+
+@pytest.mark.parametrize("hold", [True, False])
+def test_think_block_is_hidden(hold):
+    assert run_filter("<think>Let me reason about it.</think>\n\nThe answer.", hold) == "The answer."
+
+
+def test_prefilled_template_lone_closing_tag():
+    text = "Alright, let's tackle this user query.\n</think>\n\nBased on the passages, X."
+    assert run_filter(text, hold=True) == "Based on the passages, X."
+
+
+def test_normal_answers_pass_through():
+    assert run_filter("Plain answer with <b>no</b> thinking.", hold=False) == "Plain answer with <b>no</b> thinking."
+    assert run_filter("  < 5 items", hold=False) == "  < 5 items"
+
+
+def test_unclosed_reasoning_is_shown_rather_than_lost():
+    assert run_filter("Answer without any tags.", hold=True) == "Answer without any tags."
+    assert run_filter("<think>cut off before closing", hold=False) == "cut off before closing"
+
+
+def test_which_models_need_filtering():
+    hf = ModelInfo("hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF:latest", capabilities=["completion"])
+    assert thinking.reasons_unseparated(hf)
+    assert thinking.reasons_unseparated(ModelInfo("deepseek-r1:8b"))
+    assert not thinking.reasons_unseparated(ModelInfo("deepseek-r1:8b", capabilities=["completion", "thinking"]))
+    assert not thinking.reasons_unseparated(ModelInfo("gpt-oss:20b", capabilities=["completion", "thinking"]))
+    assert not thinking.reasons_unseparated(ModelInfo("llama3:latest", capabilities=["completion"]))
+
+
+def test_rewrite_ignores_reasoning(ollama):
+    ollama.models.append({"name": "deepseek-r1:8b", "family": "qwen2", "parameter_size": "8B",
+                          "capabilities": ["completion"], "context_length": 32768, "size": 1})
+    ollama.answers = ["Okay, the user asks about weight.\n</think>\nWhat is the weight of the UltraBook Pro 14?"]
+    q = pipeline.rewrite_followup(OllamaClient(ollama.url), "deepseek-r1:8b", "and its weight?",
+                                  [{"q": "Tell me about the UltraBook Pro 14", "a": "A laptop."}], 4096)
+    assert q == "What is the weight of the UltraBook Pro 14?"
+    assert ollama.calls("/api/generate")[-1]["options"]["num_predict"] == 1024
