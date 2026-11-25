@@ -71,11 +71,27 @@ def context_window(client: OllamaClient, settings: Settings, model: str) -> int:
     return min(client.context_length(model) or FALLBACK_CTX, settings.max_ctx)
 
 
+_FOLLOWUP_WORDS = re.compile(
+    r"\b(it|its|it's|they|them|their|this|that|these|those|he|she|his|her|there|"
+    r"above|previous|earlier|former|latter|same|"
+    r"(the )?(first|second|third|last|other|which) one)\b", re.I)
+_FOLLOWUP_START = re.compile(r"^\s*(and|but|also|so|then|what about|how about|why|why not)\b", re.I)
+
+
+def looks_like_followup(question: str) -> bool:
+    """Only questions that lean on the conversation are rewritten; a complete
+    question ("How does the round-table protocol resolve conflicts?") is
+    searched exactly as asked."""
+    q = question.strip()
+    return (len(q.split()) <= 5 or bool(_FOLLOWUP_START.search(q))
+            or bool(_FOLLOWUP_WORDS.search(q)))
+
+
 def rewrite_followup(client: OllamaClient, model: str, question: str,
                      history: list[dict], num_ctx: int) -> str:
     """Turn a follow-up ("what about the second one?") into a standalone search query.
     Falls back to the original question if the model's reply looks unusable."""
-    if not history:
+    if not history or not looks_like_followup(question):
         return question
     try:
         reply = client.generate(model, P.build_rewrite_prompt(question, history),
@@ -236,6 +252,14 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
         return Prepared(text, used, search_query, num_ctx, turns, broad=True)
 
     results = search(vector, settings.top_k)
+    if search_query != question:
+        # A rewrite can drift from what was asked; search with the original
+        # wording too and keep the best of both.
+        merged = {}
+        for r in results + search(embed_query(client, settings, question), settings.top_k):
+            if r["text"] not in merged or r["score"] > merged[r["text"]]["score"]:
+                merged[r["text"]] = r
+        results = list(merged.values())
     chunks = select(results, settings.top_k, settings.min_score)
     if settings.grade_chunks and chunks:
         chunks = grade_chunks(client, model, search_query, chunks, num_ctx)

@@ -439,3 +439,48 @@ def test_rewrite_ignores_reasoning(ollama):
                                   [{"q": "Tell me about the UltraBook Pro 14", "a": "A laptop."}], 4096)
     assert q == "What is the weight of the UltraBook Pro 14?"
     assert ollama.calls("/api/generate")[-1]["options"]["num_predict"] == 1024
+
+
+# ── follow-up rewriting only when needed ──────────────────────────────────────
+@pytest.mark.parametrize("q", ["and its weight?", "What are its limitations?", "and charging?",
+                               "What about the second one?", "Why?", "How do they compare to that?"])
+def test_followups_detected(q):
+    assert pipeline.looks_like_followup(q)
+
+
+@pytest.mark.parametrize("q", [
+    "How does the round-table protocol resolve conflicts between subsystem supervisors?",
+    "Which datasets were used to evaluate the hierarchical framework?",
+    "What scheduling mechanisms are used in time-sensitive networking?",
+])
+def test_complete_questions_not_rewritten(q):
+    assert not pipeline.looks_like_followup(q)
+
+
+def test_complete_question_after_history_is_searched_as_asked(ollama):
+    q = "How does the round-table protocol resolve conflicts between subsystem supervisors?"
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3", q,
+                         [{"q": "summarise the documents", "a": "Two papers."}], lambda v, n: [])
+    assert p.search_query == q
+    assert not [b for b in ollama.calls("/api/generate") if not b.get("stream", True)]   # no rewrite call
+
+
+def test_drifting_rewrite_still_finds_original_passages(ollama):
+    ollama.answers = ["How do specialised agents assess security posture?"]
+    calls = []
+
+    def search(vector, n):
+        calls.append(vector)
+        if len(calls) == 1:     # search with the (drifted) rewrite
+            return [{"text": "Agents assess posture.", "source": "a.pdf", "page": 2, "score": 0.6}]
+        return [{"text": "Round-table protocol details.", "source": "a.pdf", "page": 11, "score": 0.8}]
+
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3", "and how does it resolve conflicts?",
+                         [{"q": "Tell me about the round-table protocol", "a": "It is a discussion."}], search)
+    assert len(calls) == 2
+    assert [c["page"] for c in p.chunks] == [11, 2]
+
+
+def test_passage_labels_have_no_scores():
+    prompt, _, _ = build_prompt("Q?", [chunk(1)], [], 8192)
+    assert "relevance" not in prompt and "[1] (source: a.pdf, p. 1)" in prompt

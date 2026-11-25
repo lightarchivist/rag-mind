@@ -30,9 +30,8 @@ def cite(chunk: dict) -> str:
 
 
 def format_passage(i: int, chunk: dict) -> str:
-    score = chunk.get("score")
-    relevance = f", relevance: {score:.2f}" if score is not None else ""
-    return f"[{i}] (source: {cite(chunk)}{relevance})\n{chunk['text']}"
+    # No similarity score here: models copied it into answers ("relevance: 0.78").
+    return f"[{i}] (source: {cite(chunk)})\n{chunk['text']}"
 
 
 def _turn(h: dict) -> str:
