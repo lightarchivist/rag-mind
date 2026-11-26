@@ -328,3 +328,43 @@ def test_an_index_from_2_4_asks_for_a_rebuild(web, env):
     bt = BackgroundTasks(); web.reindex(bt); bt.run()
     assert web.health()["needs_reindex"] is None
     assert any(m.get("heading") == "2. Calibration" for m in web.get_index().metadatas)
+
+
+def test_rebuild_keeps_stored_text_of_a_file_it_cannot_read(web, monkeypatch):
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    before = web.get_index().sources()["a.txt"]
+
+    def unreadable(*a, **k):
+        raise web.ExtractionError("Could not read a.txt: damaged")
+    monkeypatch.setattr(web.structure, "load", unreadable)
+    bt = BackgroundTasks(); web.reindex(bt); bt.run()
+    assert web.reindex_status()["status"] == "done"
+    assert web.get_index().sources() == {"a.txt": before}
+
+
+def test_no_delete_while_the_file_is_being_indexed(web):
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    web.indexing_status["a.txt"] = {"status": "indexing", "progress": 10, "chunks": 0}
+    for call in (lambda: web.delete_file("a.txt"), lambda: web.delete_document("a.txt")):
+        with pytest.raises(HTTPException) as e:
+            call()
+        assert e.value.status_code == 409
+    web.indexing_status.pop("a.txt")
+    assert web.delete_file("a.txt") == {"deleted": "a.txt"}
+
+
+def test_an_index_saved_halfway_asks_for_a_rebuild(web, env):
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    import numpy as np
+    with open(env / "data" / "index.npz", "wb") as f:                 # one vector too few
+        np.savez(f, vectors=web.get_index().vectors[:-1])
+    web._index = None
+    assert "a save was interrupted" in web.health()["needs_reindex"]
+    bt = BackgroundTasks(); web.reindex(bt); bt.run()
+    assert web.health()["needs_reindex"] is None and web.get_index().sources()["a.txt"] > 0
+
+
+def test_chat_history_from_the_page_is_read_as_text(web, ollama):
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    head, _ = chat(web, "and its weight?", history=[{"q": "Tell me about the UltraBook", "a": 42}, "junk"])
+    assert head is not None

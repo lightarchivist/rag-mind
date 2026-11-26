@@ -5,6 +5,26 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.3] - 2026-11-27
+
+### Fixed
+- Networking questions such as "Does uRPF check both source and destination addresses?" or "Do all sources need IGMPv3?" were taken as questions about all the documents and answered from every document's summary. "Source" and "text" no longer count as words for a document.
+- "Summarise segment routing" and "Give me an overview of LDP" summarised every document instead of the topic. A short request for a summary covers all the documents only when it names no topic.
+- Questions with "across the network", "throughout the session" or "Where is the IP address configured?" were treated as "where do the documents cover this?", which spreads passages over many sections. Only questions about where the documents cover a topic are treated that way now.
+- "Is there a default…?", "labels above 15", "the previous hop" and "the same label" made complete questions count as follow-ups, so they were rewritten from the conversation.
+- "The Cisco systems" could limit the search to the documents with "Cisco" in their title.
+- A follow-up to a "not found" answer also searched with that answer.
+- The repair for letter spacing ("T able") could join real text in the same document: "V is the set of nodes" became "Vis the set of nodes". Letters are now joined only when the result is a word.
+- One damaged page made a whole PDF unreadable. The page is now skipped.
+- PDFs whose bookmarks are not in page order (an "Index" bookmark first) got wrong sections.
+- Ligatures in bookmark titles ("Speciﬁcation") are replaced with plain letters.
+- eBook watermarks with accented names or lowercase particles ("van der") were not removed.
+- Rebuild index stopped with an error when one file could no longer be read. That document now keeps its stored text.
+- Deleting a file while it was being indexed put it back in the index when indexing finished. Deleting is now refused until then.
+- The Index button stayed at "0%" when the server refused to index (for example during a rebuild).
+- The CONTEXT list could close by itself while open, because it was rebuilt every 10 seconds.
+- An index whose two files were saved only halfway (a crash during a save) is detected and asks for a rebuild instead of giving wrong results.
+
 ## [3.0.2] - 2026-11-26
 
 ### Fixed

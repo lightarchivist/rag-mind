@@ -157,10 +157,14 @@ def rebuild_background():
         new = NumpyIndex(pipeline.index_signature(settings))
         for name in sources:
             path = os.path.join(UPLOAD_DIR, name)
+            texts = []
             if os.path.isfile(path):
-                _, chunks, title = structure.load(path, settings.chunk_size, settings.chunk_overlap)
-                texts, metas = [ch.text for ch in chunks], [_chunk_meta(name, ch, title) for ch in chunks]
-            else:
+                try:
+                    _, chunks, title = structure.load(path, settings.chunk_size, settings.chunk_overlap)
+                    texts, metas = [ch.text for ch in chunks], [_chunk_meta(name, ch, title) for ch in chunks]
+                except ExtractionError as e:       # keep the document: use its stored text
+                    print(f"{name}: could not be re-read ({e}); keeping its stored text", flush=True)
+            if not texts:
                 rows = old.chunks_of(name)
                 texts = [d for d, _ in rows]
                 metas = [dict(m, chunk_id=i) for i, (_, m) in enumerate(rows)]
@@ -287,9 +291,16 @@ def refuse_during_rebuild():
         raise HTTPException(409, "The index is being rebuilt; try again when it finishes")
 
 
+def refuse_while_indexing(name: str):
+    # The indexing job would put the document back when it finishes.
+    if indexing_status.get(name, {}).get("status") == "indexing":
+        raise HTTPException(409, f"{name} is being indexed right now; try again when it finishes")
+
+
 @app.delete("/documents/{filename}")
 def delete_document(filename: str):
     refuse_during_rebuild()
+    refuse_while_indexing(filename)
     with index_lock:
         idx = get_index()
         if not idx.delete_source(filename):
@@ -305,6 +316,7 @@ def delete_file(filename: str):
     if not os.path.isfile(fpath):
         raise HTTPException(404, "File not found")
     name = os.path.basename(fpath)
+    refuse_while_indexing(name)
     with index_lock:
         idx = get_index()
         if idx.delete_source(name):
@@ -377,7 +389,8 @@ def chat_stream(req: ChatRequest):
             with index_lock:
                 return get_index().query(vector, n, source_filter=req.filter_source)
 
-        history = [h for h in req.history if isinstance(h, dict)]
+        history = [{"q": str(h.get("q") or ""), "a": str(h.get("a") or "")}
+                   for h in req.history if isinstance(h, dict)]
         # Broad questions ("compare the documents") draw on every document,
         # unless the user limited the chat to one document.
         corpus = IndexCorpus(only=req.filter_source)

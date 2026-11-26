@@ -28,8 +28,13 @@ _APPENDIX = re.compile(r"^(Appendix|APPENDIX)\s+([A-Z])\s*[.:]\s*([A-Z].{1,80})$
 _ROMANS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV"]
 
 
+# Typographic ligatures in bookmark and metadata titles ("Speciﬁcation"), as in extract.py.
+_LIGATURES = str.maketrans({"\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl", "\ufb03": "ffi",
+                            "\ufb04": "ffl", "\ufb05": "st", "\ufb06": "st"})
+
+
 def _clean(title: str) -> str:
-    return " ".join(title.split()).strip(" .:")
+    return " ".join(title.translate(_LIGATURES).split()).strip(" .:")
 
 
 _TRAILING = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "is", "of", "on", "or",
@@ -152,6 +157,9 @@ def _positions(headings, pages) -> list[tuple[int, int, str]]:
 
 def assign_headings(chunks: list[Chunk], pages, headings) -> None:
     """Set chunk.heading to the section path at the middle of each chunk."""
+    # In page order: a bookmark list that starts with, say, "Index" (the last
+    # page) would otherwise push every later heading to the end of the book.
+    headings = sorted(headings, key=lambda h: h[0] or 0)
     marks = _positions(headings, pages)
     i, stack = 0, []
     for ch in chunks:

@@ -38,9 +38,17 @@ _LIGATURES = str.maketrans({"\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl", "\uf
 _STAMP = re.compile(r"Authorized licensed use limited to:[^\n]{0,250}?Restrictions apply\.?")
 # Letter spacing that splits a capital from the rest of its word ("T able 1",
 # "T o ensure", "V ery"), common in some journals' PDFs. Joined only where it
-# happens throughout a document, since "T cells" is a real phrase elsewhere.
+# happens throughout a document, and only where the result is a word: "T cells",
+# "V is the set of nodes" and "Y cable" are real and stay as they are.
 _SPLIT_CAPITAL = re.compile(r"\b([TVWY]) ([a-z]+)\b")
 SPLIT_CAPITAL_MIN = 10
+
+
+def _split_word_test(whole: str):
+    """A test for one _SPLIT_CAPITAL match: join "T able" when "table" is a word
+    elsewhere in the document, or when "able" isn't ("T eachers")."""
+    vocab = set(re.findall(r"[a-z]+", _SPLIT_CAPITAL.sub(" ", whole).lower()))
+    return lambda m: (m.group(1) + m.group(2)).lower() in vocab or m.group(2) not in vocab
 # Small capitals in numbered headings come out as "VIII. C ONCLUSION".
 _SPLIT_HEADING = re.compile(r"(\b[IVX]+\.\s+)([A-Z]) ([A-Z]{2,})\b")
 
@@ -48,9 +56,10 @@ _SPLIT_HEADING = re.compile(r"(\b[IVX]+\.\s+)([A-Z]) ([A-Z]{2,})\b")
 # The same watermark without the "ptg" number: "From the Library of <Name>".
 # It is removed only when one name repeats on many pages, which ordinary text
 # ("From the Library of Congress", once) never does.
-# The name: up to four capitalised words on one line (any spaces between them,
-# no-break spaces included).
-_LIBRARY_OF = re.compile(_FROM_LIBRARY + r"((?:[A-Z][\w'’.-]*)(?:[^\S\n]+[A-Z][\w'’.-]*){0,3})")
+# The name: up to four words on one line (any spaces between them, no-break
+# spaces included). Letters of any language, and lowercase particles: "José
+# van der Berg".
+_LIBRARY_OF = re.compile(_FROM_LIBRARY + r"((?:[^\W\d_][\w'’.-]*)(?:[^\S\n]+[^\W\d_][\w'’.-]*){0,3})")
 WATERMARK_MIN = 10
 
 
@@ -75,7 +84,8 @@ def repair(pages: Pages, report: dict | None = None) -> Pages:
     whole = "".join(text for _, text in pages)
     broken = len(_BROKEN_S.findall(whole)) + len(re.findall(r"(?<=[A-Za-z]\u2212)\u2212(?![a-z])", whole))
     fix_s = broken >= BROKEN_S_MIN and broken >= 0.5 * whole.count("s")
-    join_capitals = len(_SPLIT_CAPITAL.findall(whole)) >= SPLIT_CAPITAL_MIN
+    joinable = _split_word_test(whole)
+    join_capitals = sum(1 for m in _SPLIT_CAPITAL.finditer(whole) if joinable(m)) >= SPLIT_CAPITAL_MIN
     owners = [re.compile(_FROM_LIBRARY + r"[^\S\n]+".join(map(re.escape, n.split())) + r"(?:\s*ptg\d{6,})?")
               for n in _watermark_names(whole)]
     counts = {"watermarks": 0, "stamps": 0, "ligatures": 0, "split_words": 0}
@@ -86,8 +96,8 @@ def repair(pages: Pages, report: dict | None = None) -> Pages:
         counts["ligatures"] += len(re.findall("[\ufb00-\ufb06]", text))
         text = text.translate(_LIGATURES)
         if join_capitals:
-            text, n = _SPLIT_CAPITAL.subn(r"\1\2", text)
-            counts["split_words"] += n
+            counts["split_words"] += sum(1 for m in _SPLIT_CAPITAL.finditer(text) if joinable(m))
+            text = _SPLIT_CAPITAL.sub(lambda m: m.group(1) + m.group(2) if joinable(m) else m.group(0), text)
         text, n = _SPLIT_HEADING.subn(r"\1\2\3", text)
         counts["split_words"] += n
         text, n = _WATERMARK.subn(" ", text)
@@ -140,7 +150,16 @@ def _plain(path):
 def _pdf(path):
     pypdf = _need("pypdf", "pypdf")
     reader = pypdf.PdfReader(path)
-    return [(i, page.extract_text() or "") for i, page in enumerate(reader.pages, 1)]
+    pages, errors = [], []
+    for i, page in enumerate(reader.pages, 1):
+        try:
+            pages.append((i, page.extract_text() or ""))
+        except Exception as e:            # one damaged page shouldn't lose the whole book
+            errors.append(e)
+            pages.append((i, ""))
+    if errors and len(errors) == len(pages):
+        raise errors[0]                    # nothing readable: report why (encrypted, damaged)
+    return pages
 
 
 def _docx(path):

@@ -148,6 +148,44 @@ def test_watermark_with_odd_spacing_or_a_running_header_after_it(tmp_path):
     assert "Body of page 7." in out and "Labels 507" in out and "505 Cisco Guide" in out
 
 
+def test_split_capitals_leave_variables_alone(tmp_path):
+    text = ("This is a graph. Let G = (V, E) where V is the set of nodes and T is the period. " * 15
+            + "T able 1 shows T o be V ery clear and T eachers agree. " * 4 + "The table is very clear.")
+    [(_, out)] = extract_pages(write(tmp_path / "paper.txt", text), report := {})
+    assert "V is the set of nodes" in out and "T is the period" in out
+    assert "Table 1 shows To be Very clear and Teachers agree." in out and report["split_words"] == 16
+
+
+def test_watermark_names_with_accents_and_particles(tmp_path):
+    pages = "".join(f"Page {i} about MPLS.\nFrom the Library of Jos\u00e9 van der Berg\nBody {i}.\n"
+                    for i in range(12))
+    [(_, out)] = extract_pages(write(tmp_path / "book.txt", pages))
+    assert "Jos" not in out and "Berg" not in out and "Body 7." in out
+
+
+def test_one_unreadable_pdf_page_does_not_lose_the_document(tmp_path, monkeypatch):
+    pypdf = pytest.importorskip("pypdf")
+    w = pypdf.PdfWriter()
+    for _ in range(3):
+        w.add_blank_page(100, 100)
+    w.write(str(tmp_path / "three.pdf"))
+    real = pypdf.PageObject.extract_text
+    calls = []
+
+    def flaky(self, *a, **k):
+        calls.append(1)
+        if len(calls) == 2:
+            raise ValueError("damaged content stream")
+        return "Readable page text."
+    monkeypatch.setattr(pypdf.PageObject, "extract_text", flaky)
+    pages = extract_pages(str(tmp_path / "three.pdf"))
+    assert [p for p, _ in pages] == [1, 2, 3] and pages[1][1] == "" and pages[2][1] == "Readable page text."
+    monkeypatch.setattr(pypdf.PageObject, "extract_text", lambda self, *a, **k: 1 / 0)
+    with pytest.raises(ExtractionError):                 # nothing readable at all: still an error
+        extract_pages(str(tmp_path / "three.pdf"))
+    monkeypatch.setattr(pypdf.PageObject, "extract_text", real)
+
+
 def test_real_minus_signs_are_left_alone(tmp_path):
     maths = "With n\u22121 links and x \u2212 y = 3, the cost is small. " * 30   # plenty of real "s"
     [(_, text)] = extract_pages(write(tmp_path / "paper.txt", maths), report := {})

@@ -822,6 +822,11 @@ async function indexFile(name, btn) {
   try {
     const r = await fetch(`/index/${encodeURIComponent(name)}`, {method:'POST'});
     const d = await r.json();
+    if (!r.ok) {                       // refused (e.g. during a rebuild): say why, don't poll
+      toast(d.detail || `Could not index ${name}`, 'error');
+      btn.disabled = false; btn.textContent = 'Index';
+      return;
+    }
     if (d.status === 'already_indexing') {
       toast(`${name} already indexing`, 'info');
       return;
@@ -1145,10 +1150,15 @@ function updateSelector() {
   }
 }
 
+let selectorKey = null;
 async function refreshSelector() {
   const r = await fetch('/documents');
   const d = await r.json();
   const sel = document.getElementById('doc-selector');
+  // Rebuilding the list closes it if it is open, so only do it when it changed.
+  const key = JSON.stringify(d.documents);
+  if (key === selectorKey) return;
+  selectorKey = key;
   const current = sel.value;
   // keep first option
   while (sel.options.length > 1) sel.remove(1);

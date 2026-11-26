@@ -23,8 +23,8 @@ Usage:
     python rag_cli.py clear [--yes]
 
 Settings (environment variables override ~/.ragmind/config.json):
-    OLLAMA_BASE, LLM_MODEL, EMBED_MODEL, RAG_CLI_DB,
-    RAGMIND_MAX_CTX, RAGMIND_TOP_K, RAGMIND_MIN_SCORE, RAGMIND_REWRITE, RAGMIND_GRADE
+    OLLAMA_BASE, LLM_MODEL, EMBED_MODEL, RAG_CLI_DB, RAGMIND_MAX_CTX, RAGMIND_TOP_K,
+    RAGMIND_MIN_SCORE, RAGMIND_REWRITE, RAGMIND_GRADE, RAGMIND_KEYWORDS, RAGMIND_TIMEOUT
 
 Requirements:
     pip install -r requirements.txt
@@ -41,13 +41,13 @@ import textwrap
 import time
 
 from ragmind import __version__, pipeline, structure, thinking
-from ragmind.config import ENV, Settings, default_config_path, load_settings, save_setting
+from ragmind.config import ENV, Settings, load_settings, save_setting
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError
 from ragmind.ollama import (ModelInfo, ModelNotFound, NotAChatModel, OllamaClient,
                             OllamaError, OllamaUnavailable, short)
 from ragmind.keyword import KeywordIndex
 from ragmind.numpy_index import keyword_texts, result
-from ragmind.prompt import cite, group_sources, tidy_citations
+from ragmind.prompt import group_sources, tidy_citations
 
 # ─── Colours ──────────────────────────────────────────────────────────────────
 RESET = "\033[0m"; BOLD = "\033[1m"; CYAN = "\033[96m"
@@ -322,16 +322,22 @@ class ChromaStore:
             for key, rows in sorted(groups.items()):
                 rows.sort(key=lambda r: r[0])
                 path = rows[0][2].get("path")
+                texts, how = [], "file not found; kept stored text"
                 if path and os.path.isfile(path):
                     with open(path, "rb") as f:
                         file_hash = hashlib.sha256(f.read()).hexdigest()[:16]
-                    _, chunks, title = structure.load(path, self.settings.chunk_size, self.settings.chunk_overlap)
-                    texts = [ch.text for ch in chunks]
-                    metas = [self._chunk_meta(path, file_hash, ch, len(chunks), title) for ch in chunks]
-                    stats["from_file"] += 1
-                    how = "re-read from file"
-                else:
-                    # File moved or deleted (or a 1.x index without paths): keep the stored text.
+                    try:
+                        _, chunks, title = structure.load(path, self.settings.chunk_size,
+                                                          self.settings.chunk_overlap)
+                        texts = [ch.text for ch in chunks]
+                        metas = [self._chunk_meta(path, file_hash, ch, len(chunks), title) for ch in chunks]
+                        if texts:
+                            stats["from_file"] += 1
+                        how = "re-read from file" if texts else "no text found; kept stored text"
+                    except ExtractionError as e:
+                        how = f"could not be re-read ({e}); kept stored text"
+                if not texts:
+                    # File moved, deleted or unreadable (or a 1.x index without paths): keep the stored text.
                     texts = [r[1] for r in rows]
                     file_hash = rows[0][2].get("file_hash") or hashlib.sha256(
                         "".join(texts).encode()).hexdigest()[:16]
@@ -341,7 +347,6 @@ class ChromaStore:
                         m.update(chunk_id=i, n_chunks=len(rows), file_hash=file_hash)
                         metas.append(m)
                     stats["from_index"] += 1
-                    how = "file not found; kept stored text"
                 if not texts:
                     continue
                 vectors = pipeline.embed_documents(ollama, self.settings, _embedding_texts(texts, metas))
@@ -467,8 +472,8 @@ def reindex(store: ChromaStore, ollama: OllamaClient) -> int:
     stats = store.reindex(ollama)
     print(c(GREEN, f"\n  Done — {stats['chunks']} chunks."))
     if stats["from_index"]:
-        print(c(YELLOW, f"  {stats['from_index']} document(s) were not found on disk; their "
-                        "stored text was kept, without page numbers."))
+        print(c(YELLOW, f"  {stats['from_index']} document(s) could not be re-read from disk; "
+                        "their stored text was kept."))
     return 0
 
 

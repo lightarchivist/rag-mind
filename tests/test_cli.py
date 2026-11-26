@@ -366,3 +366,16 @@ def test_cli_stores_titles_and_sections_and_searches_one_document(cli, env):
     q = "Which label values are reserved, and what is label 3?"
     assert {h["source"] for h in s.keyword_search(q, 5)} == {"meadow.txt", "mpls.txt"}
     assert {h["source"] for h in s.keyword_search(q, 5, meadow)} == {"meadow.txt"}
+
+
+def test_reindex_keeps_stored_text_of_a_file_it_cannot_read(cli, env, monkeypatch, capsys):
+    path = write(env / "a.txt", BOOK)
+    assert cli.main(["add", path]) == 0
+    before = store(cli).count()
+
+    def unreadable(*a, **k):
+        raise cli.ExtractionError("Could not read a.txt: damaged")
+    monkeypatch.setattr(cli.structure, "load", unreadable)
+    assert cli.main(["reindex"]) == 0
+    assert "could not be re-read" in capsys.readouterr().out
+    assert store(cli).count() == before

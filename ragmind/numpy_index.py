@@ -54,6 +54,11 @@ class NumpyIndex:
             idx.documents, idx.metadatas = data["documents"], data["metadatas"]
             with np.load(npath) as z:
                 idx.vectors = z["vectors"].astype(np.float32)
+            if len(idx.documents) and (idx.vectors.shape[0] != len(idx.documents)
+                                       or len(idx.metadatas) != len(idx.documents)):
+                # A save was cut off between the two files: the texts are fine, the
+                # vectors aren't. Searching is refused until the index is rebuilt.
+                idx.signature = {"damaged": True}
             return idx
         legacy = os.path.join(folder, LEGACY)
         if os.path.exists(legacy):

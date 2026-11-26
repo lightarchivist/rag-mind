@@ -321,6 +321,9 @@ The full list is in the README.
   in them don't reach answers or prompts. **Show page** draws the original PDF,
   so they are still visible on page images, as on paper.
 - **Deleting a file** removes it, its passages and its page images.
+- **There is no login.** Anyone on your network who can open
+  `http://<this computer>:8000` can read, upload and delete documents. Use it on a
+  network you trust, or block port 8000 for other machines in your firewall.
 
 **Back up** your library (saves `ragmind-backup.tgz` in the current folder):
 

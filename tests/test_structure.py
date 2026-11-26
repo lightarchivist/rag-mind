@@ -263,3 +263,89 @@ def test_conversational_words_are_not_keywords():
 def test_how_many_questions_count_what_the_passages_name():
     prompt, _, _ = build_prompt("How many route types are there?", [], [], 8192)
     assert "list the ones the passages name and count them" in prompt
+
+
+# ── 3.0.3: fewer false matches on ordinary networking questions ───────────────
+
+@pytest.mark.parametrize("question", [
+    "Does uRPF check both source and destination addresses?",
+    "Do all sources in an SSM group need IGMPv3?",
+    "Show all text in the running config",
+    "Summarise segment routing",
+    "Give me an overview of LDP",
+])
+def test_topic_questions_are_not_about_the_documents_as_a_whole(question):
+    assert not pipeline.is_broad(question)
+
+
+@pytest.mark.parametrize("question", ["Summarise the key findings", "Give me an overview", "tl;dr",
+                                      "Summarise both papers", "What do these books have in common?"])
+def test_questions_about_the_documents_are_still_broad(question):
+    assert pipeline.is_broad(question)
+
+
+@pytest.mark.parametrize("question, breadth", [
+    ("How is the label distributed across the network?", False),
+    ("Where is the IP address configured?", False),
+    ("Where does TI-LFA coverage fail?", False),
+    ("What parts of the router handle forwarding?", False),
+    ("Is the timer consistent throughout the session?", False),
+    ("Which chapters discuss segment routing?", True),
+    ("Where does the book cover EVPN?", True),
+    ("Which book discusses EVPN?", True),
+    ("How is QoS handled across all the books?", True),
+])
+def test_breadth_means_where_the_documents_cover_a_topic(question, breadth):
+    assert pipeline.asks_for_breadth(question) is breadth
+
+
+def test_plural_generic_nouns_do_not_name_documents():
+    titles = {"fw.pdf": "Cisco Secure Firewall Guide", "ccde.pdf": "Cisco Certified Design Expert",
+              "bgp.pdf": "Troubleshooting BGP"}
+    assert pipeline.documents_named("How is QoS configured in the Cisco systems?", titles) == []
+    assert pipeline.documents_named("Summarise the Cisco books", titles) == ["fw.pdf", "ccde.pdf"]
+
+
+def test_no_answer_search_after_a_not_found_answer(ollama):
+    corpus = Corpus({"a.pdf": [("", "Relays are calm.")], "b.pdf": [("", "Other.")]})
+    searched = []
+
+    def search(vector, n):
+        searched.append(vector)
+        return [corpus._row("a.pdf", 0, 0.8)]
+
+    ollama.answers = ["What is the relay offset?"]
+    history = [{"q": "What is the gain?", "a": "This information is not found in the indexed documents."}]
+    pipeline.prepare(OllamaClient(ollama.url), Settings(keyword_search=False), "llama3",
+                     "And the offset?", history, search)
+    assert len(searched) == 2                 # the rewrite and the original wording, not the answer
+
+
+def test_bookmarks_out_of_page_order_still_place_headings():
+    pages = [(1, "Intro text. " * 30), (2, "Routing text. " * 30), (3, "Index entries. " * 30)]
+    chunks = chunk_pages(pages, 120, 20)
+    # An "Index" bookmark listed first, pointing at the last page.
+    structure.assign_headings(chunks, pages, [(3, 1, "Index"), (1, 1, "1. Intro"), (2, 1, "2. Routing")])
+    first_on_page = {}
+    for ch in chunks:
+        first_on_page.setdefault(ch.page, ch.heading)
+    assert first_on_page == {1: "1. Intro", 2: "2. Routing", 3: "Index"}
+
+
+def test_ligatures_are_removed_from_titles():
+    assert structure._clean("Speciﬁcation of the ﬂow") == "Specification of the flow"
+
+
+@pytest.mark.parametrize("question, followup", [
+    ("Is there a default hold time for targeted hellos?", False),
+    ("Are there any limitations of TI-LFA?", False),
+    ("Which labels above 15 are free to use?", False),
+    ("What is the previous hop in PHP?", False),
+    ("Is the same label used on both sides of the link?", False),
+    ("What happens there?", True),
+    ("Can you explain the previous answer?", True),
+    ("Summarise the above points", True),
+    ("What about the other one?", True),
+])
+def test_pointing_words_only_count_when_they_point_back(question, followup):
+    assert pipeline.looks_like_followup(question) is followup

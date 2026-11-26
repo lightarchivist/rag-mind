@@ -45,6 +45,8 @@ def signature_problem(stored: dict | None, settings: Settings) -> str | None:
     """Why an existing index can't be searched with the current settings, or None."""
     if not stored:
         return "it was built by an older version of RagMind"
+    if stored.get("damaged"):
+        return "its saved files don't match (a save was interrupted)"
     if stored.get("format") != INDEX_FORMAT:
         return "it was built by an older version of RagMind"
     if stored.get("embed_model") != normalize(settings.embed_model):
@@ -84,10 +86,17 @@ def context_window(client: OllamaClient, settings: Settings, model: str) -> int:
     return min(client.context_length(model) or FALLBACK_CTX, settings.max_ctx)
 
 
+# Words that point back at the conversation. "there", "above", "previous",
+# "earlier" and "same" count only where they point back ("What happens there?",
+# "the previous answer", "the same one"), not in "Is there a default timer?",
+# "labels above 15", "the previous hop" or "the same label".
+_REPLY = r"(?:answer|question|reply|response|message|explanation|example|list|table|points?|steps?)"
 _FOLLOWUP_WORDS = re.compile(
-    r"\b(it|its|it's|they|them|their|this|these|those|he|she|his|her|there|"
-    r"above|previous|earlier|former|latter|same|"
-    r"(the )?(first|second|third|last|other|which) (one|point|item|step|part))\b", re.I)
+    r"\b(?:it|its|it's|they|them|their|this|these|those|he|she|his|her|former|latter)\b"
+    rf"|\bthe above\b|\babove {_REPLY}\b|\b(?:previous|earlier|last) {_REPLY}\b"
+    r"|\b(?:there|above|previously|earlier)(?=\s*(?:[?.!,;:]|$))"
+    r"|\b(?:the )?(?:first|second|third|last|other|which|previous|earlier|same) (?:one|point|item|step|part)s?\b"
+    r"|\bsame (?:thing|question|answer|way)\b", re.I)
 # "that" points back at the conversation in "explain that", "is that true?",
 # "how does that work?", "that one", "that method"; but not when it joins a
 # clause: "What does TI-LFA provide that classic LFA does not?"
@@ -277,7 +286,9 @@ class Prepared:
 # references). For these questions every document contributes its opening
 # (title/abstract) plus its best matches, and boilerplate is skipped.
 
-_DOC = r"(document|doc|paper|file|book|article|source|text|study|studie|report|pdf)"
+# Words for the indexed documents. Not "source" or "text": "both source and
+# destination addresses" and "all sources in the group" are about networks.
+_DOC = r"(document|doc|paper|file|book|article|study|studie|report|pdf)"
 _DOCS = rf"{_DOC}s\b"                      # plural: "the documents", "both papers"
 _BROAD = [
     # summarise / compare ... documents
@@ -333,13 +344,23 @@ _FRONT_MATTER = re.compile(
 _LAYOUTS: dict = {}
 
 
+# Words of a bare request for a summary: "Give me an overview", "Summarise the key findings".
+_SUMMARY_WORDS = set("""overview tl dr tldr give me an a the of please key main findings results points
+contributions conclusion conclusions everything it this these them all document documents paper papers
+book books file files quick short brief briefly i want need can could you provide what is are about
+whole overall for my their its""".split())
+
+
 def is_broad(question: str) -> bool:
     """Does the question ask about the documents as a whole (several of them)?"""
     q = question.strip()
     if any(p.search(q) for p in _BROAD):
         return True
-    # A bare "summarise" / "give me an overview" with no specific topic.
-    return bool(_SHORT_SUMMARY.search(q)) and len(q.split()) <= 6
+    # A bare "summarise" / "give me an overview" with no specific topic; "Summarise
+    # segment routing" and "Overview of LDP" are about a topic, not the documents.
+    if not _SHORT_SUMMARY.search(q) or len(q.split()) > 6:
+        return False
+    return all(w in _SUMMARY_WORDS or w.startswith("summar") for w in re.findall(r"[a-z]+", q.lower()))
 
 
 def is_boilerplate(text: str) -> bool:
@@ -706,7 +727,8 @@ def _phrases(question: str) -> list[tuple[set[str], bool]]:
     for pattern, words_at, noun_at in ((_NAMED_BEFORE, 1, 2), (_NAMED_AFTER, 2, 1)):
         for m in pattern.finditer(question):
             noun = m.group(noun_at).lower()
-            plural = noun == "studies" or (noun.endswith("s") and noun != "pdfs")
+            # "the RAG papers" names several documents; "the Cisco systems" names devices.
+            plural = noun == "studies" or (noun.endswith("s") and noun not in ("pdfs", "systems", "frameworks"))
             parts = re.split(r"\s+and\s+|,\s*", m.group(words_at).strip(), flags=re.I)
             for part in parts:
                 words = {stem(w) for w in re.findall(r"[a-z0-9]+", part.lower()) if w not in _NOT_NAMING}
@@ -751,15 +773,21 @@ _DEPTH = re.compile(
     r"\b(explain\w*|elaborate|in (?:more |greater |full )?detail|step[- ]by[- ]step|walk (?:me )?through|"
     r"describe\w* how|how (?:does|do|is|are|did|was|were)\b[^?]*\b(?:work|works|done|performed|"
     r"implemented|calculated|computed|combined|built|configured|structured|organi[sz]ed))\b", re.I)
+# Breadth means "where do the documents cover X", not "across the network" or
+# "where is the IP address configured".
+_COVER = r"(?:discuss(?:es|ed)?|cover(?:s|ed)?|mention(?:s|ed)?|describ(?:e|es|ed)|explain(?:s|ed)|talks? about)"
 _BREADTH = re.compile(
-    r"\b(?:which|what|in which) (?:chapters?|sections?|parts?)\b"
-    r"|\bwhere\b[^?]*\b(?:discuss\w*|cover\w*|mention\w*|describ\w*|explain\w*|talk\w*|introduc\w*|"
-    r"address\w*|appear\w*)\b"
-    r"|\b(?:across|throughout)\b|\ball the (?:places|sections|chapters)\b", re.I)
+    r"\b(?:which|what|in which) (?:chapters?|sections?)\b"
+    rf"|\b(?:which|what) (?:books?|documents?|papers?|guides?)\b[^?]*\b{_COVER}\b"
+    rf"|\bwhere\b[^?]*\b{_COVER}\b"
+    r"|\b(?:across|throughout) (?:(?:the|all|both|these|my) ){0,2}(?:books?|documents?|papers?|chapters?|"
+    r"sections?|guides?|library)\b"
+    r"|\ball the (?:places|sections|chapters)\b", re.I)
 DEPTH_EXTRA = 2         # further chunks of the same section added to the best passage
 PER_SECTION = 2         # passages per section for breadth questions
 BREADTH_EXTRA = 2       # breadth questions get this many passages more than top_k
 FOLLOWUP_EXTRA = 2      # passages found with the previous answer, for follow-ups
+_NOT_FOUND = re.compile(r"\s*this information is not found", re.I)   # an answer with nothing to search by
 
 
 def asks_for_depth(question: str) -> bool:
@@ -883,7 +911,7 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
     # A follow-up ("explain the second step") is about what the last answer said:
     # passages close to that answer are searched for as well.
     answer_vector = None
-    if history:
+    if history and not _NOT_FOUND.match(history[-1]["a"]):
         answer_vector = embed_query(client, settings, f"{history[-1]['a'][:1500]}\n{question}")
     keyword_query = question if search_query == question else f"{search_query} {question}"
 
