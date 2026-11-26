@@ -327,3 +327,16 @@ def test_keyword_search_in_cli_store(cli, env):
     assert hits and "implicit null" in hits[0]["text"] and hits[0]["source"] == "mpls.txt"
     assert hits[0]["key"].endswith("mpls.txt") and hits[0]["chunk_id"] is not None
     assert s.keyword_search("capital of France", 3) == []
+
+
+def test_add_force_reindexes_an_unchanged_file(cli, env, capsys):
+    path = write(env / "docs" / "book.txt", "LDP i− the default label di−tribution protocol. " * 30)
+    assert cli.main(["add", path]) == 0
+    count = store(cli).count()
+    assert cli.main(["add", path]) == 0
+    assert "unchanged" in capsys.readouterr().out
+    assert cli.main(["add", "--force", path]) == 0
+    out = capsys.readouterr().out
+    assert "chunks stored" in out and "repaired 60 characters" in out
+    assert store(cli).count() == count
+    assert "distribution protocol" in store(cli).keyword_search("default label distribution protocol LDP", 1)[0]["text"]

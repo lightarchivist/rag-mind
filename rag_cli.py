@@ -141,10 +141,11 @@ class ChromaStore:
                     documents=documents[i:i + n], metadatas=metadatas[i:i + n])
 
     # ── indexing ──
-    def add_file(self, path: str, ollama: OllamaClient, progress=None) -> dict:
+    def add_file(self, path: str, ollama: OllamaClient, progress=None, force: bool = False) -> dict:
         """Index one file. Returns {"status": added|unchanged|duplicate|empty, ...}.
         New chunks are stored before old ones are removed, so a failure part-way
-        never loses the previously indexed version."""
+        never loses the previously indexed version. `force` re-indexes an
+        unchanged file (after a RagMind update that reads documents better)."""
         self._keywords = None               # keyword index is rebuilt after changes
         if not os.path.isfile(path):
             raise CLIError(f"File not found: {path}")
@@ -154,7 +155,7 @@ class ChromaStore:
             file_hash = hashlib.sha256(f.read()).hexdigest()[:16]
 
         first = self.col.get(ids=[f"{file_hash}_0"], include=["metadatas"])
-        if first["ids"]:
+        if first["ids"] and not force:
             meta = first["metadatas"][0]
             last = f"{file_hash}_{meta.get('n_chunks', 1) - 1}"
             if self.col.get(ids=[last])["ids"]:
@@ -163,7 +164,8 @@ class ChromaStore:
                 return {"status": "duplicate", "of": meta.get("path", meta.get("source"))}
             self.col.delete(where={"file_hash": file_hash})     # earlier run was interrupted
 
-        pages = extract_pages(abs_path)
+        report = {}
+        pages = extract_pages(abs_path, report)
         chunks = chunk_pages(pages, self.settings.chunk_size, self.settings.chunk_overlap)
         if not chunks:
             return {"status": "empty"}
@@ -172,6 +174,8 @@ class ChromaStore:
         metadatas = [self._chunk_meta(abs_path, file_hash, ch, len(chunks)) for ch in chunks]
         if self.meta is None:               # fresh index: record its format before writing to it
             self._write_meta(self.collection_name)
+        if force:                           # same content, same ids: the old copy goes first
+            self.col.delete(where={"file_hash": file_hash})
         self._add(self.col, ids, vectors, [ch.text for ch in chunks], metadatas)
 
         # Now that the new version is stored, drop older versions of this file.
@@ -181,7 +185,7 @@ class ChromaStore:
         if stale:
             self.col.delete(ids=stale)
         return {"status": "added", "chunks": len(chunks), "replaced": len(stale),
-                "pages": sum(1 for p, t in pages if p and t.strip())}
+                "pages": sum(1 for p, t in pages if p and t.strip()), **report}
 
     @staticmethod
     def _chunk_meta(abs_path, file_hash, ch, n_chunks):
@@ -344,7 +348,7 @@ class ChromaStore:
 
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
-def add_files(store: ChromaStore, ollama: OllamaClient, paths: list[str]) -> int:
+def add_files(store: ChromaStore, ollama: OllamaClient, paths: list[str], force: bool = False) -> int:
     """Index files one by one; a bad file is reported and skipped. Returns failures."""
     failed = 0
     for path in paths:
@@ -354,7 +358,7 @@ def add_files(store: ChromaStore, ollama: OllamaClient, paths: list[str]) -> int
         def dots(done, total):
             print(".", end="", flush=True)
         try:
-            result = store.add_file(path, ollama, progress=dots)
+            result = store.add_file(path, ollama, progress=dots, force=force)
         except (OllamaUnavailable, ModelNotFound):
             print()
             raise                                   # no point trying the other files
@@ -369,6 +373,9 @@ def add_files(store: ChromaStore, ollama: OllamaClient, paths: list[str]) -> int
             if result["replaced"]:
                 msg += f" (replaced {result['replaced']} old chunks)"
             print(c(GREEN, msg))
+            if result.get("repaired_s"):
+                print(c(DIM, f"    repaired {result['repaired_s']} characters damaged by the PDF's font "
+                             "(\"s\" read as \"−\")"))
         elif status == "unchanged":
             print(c(YELLOW, " unchanged since last indexed, skipped"))
         elif status == "duplicate":
@@ -654,6 +661,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_add = sub.add_parser("add", help="Index one or more individual files")
     p_add.add_argument("files", nargs="+", metavar="FILE")
+    p_add.add_argument("--force", action="store_true",
+                       help="Re-index files even if unchanged (after a RagMind update)")
 
     p_chat = sub.add_parser("chat", help="Start interactive Q&A session")
     p_chat.add_argument("--model", "-m", help="Chat model for this session (see: models)")
@@ -683,7 +692,7 @@ def main(argv=None) -> int:
         if args.cmd == "folder":
             return 1 if index_folder(store, ollama, args.path, args.recursive) else 0
         if args.cmd == "add":
-            return 1 if add_files(store, ollama, args.files) else 0
+            return 1 if add_files(store, ollama, args.files, force=args.force) else 0
         if args.cmd == "chat":
             return chat_repl(store, ollama, settings, args.model or settings.llm_model)
         if args.cmd == "list":

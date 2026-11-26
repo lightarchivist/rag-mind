@@ -13,7 +13,39 @@ class ExtractionError(Exception):
     """A file could not be read. The message is meant for the user."""
 
 
-def extract_pages(path: str) -> Pages:
+# Some PDF fonts map the glyph for "s" to a minus sign (U+2212), so "session"
+# is extracted as "−e−−ion" and "is" as "i−". Such a document can't be searched
+# for any word with an "s" in it. A minus sign touching a letter is turned back
+# into "s", but only in documents where this is clearly happening: many such
+# signs, and few real "s" left. Real minus signs ("5 − 3") are never touched.
+_BROKEN_S = re.compile(r"(?<=[A-Za-z])\u2212|\u2212(?=[a-z])")
+BROKEN_S_MIN = 50
+# The buyer's watermark on eBooks sold by Pearson/InformIT, on every page:
+# "From the Library of <name> ptg12345678". It is noise in every passage.
+_WATERMARK = re.compile(r"From the Library of [^\n]{1,80}?\s*ptg\d{6,}|\bptg\d{6,}\b")
+
+
+def repair(pages: Pages, report: dict | None = None) -> Pages:
+    """Fix the broken-"s" font problem and remove eBook watermarks."""
+    whole = "".join(text for _, text in pages)
+    broken = len(_BROKEN_S.findall(whole)) + len(re.findall(r"(?<=[A-Za-z]\u2212)\u2212(?![a-z])", whole))
+    fix_s = broken >= BROKEN_S_MIN and broken >= 0.5 * whole.count("s")
+    marks = 0
+    out = []
+    for page, text in pages:
+        if fix_s:                  # twice: "acce−−" needs the first "s" before the second
+            text = _BROKEN_S.sub("s", _BROKEN_S.sub("s", text))
+        text, n = _WATERMARK.subn(" ", text)
+        marks += n
+        out.append((page, text))
+    if report is not None:
+        report.update(repaired_s=broken if fix_s else 0, watermarks=marks)
+    return out
+
+
+def extract_pages(path: str, report: dict | None = None) -> Pages:
+    """Pages of text. If `report` is a dict, it receives the number of repaired
+    characters ("repaired_s") and removed watermarks ("watermarks")."""
     ext = os.path.splitext(path)[1].lower()
     name = os.path.basename(path)
     if ext not in SUPPORTED_EXTENSIONS:
@@ -22,7 +54,7 @@ def extract_pages(path: str) -> Pages:
     reader = {".pdf": _pdf, ".docx": _docx, ".epub": _epub,
               ".html": _html, ".htm": _html}.get(ext, _plain)
     try:
-        return reader(path)
+        return repair(reader(path), report)
     except ExtractionError:
         raise
     except Exception as e:            # corrupt or encrypted files, parser bugs

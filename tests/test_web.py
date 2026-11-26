@@ -271,3 +271,15 @@ def test_keyword_search_finds_exact_terms_and_respects_the_filter(web, ollama):
     assert any("implicit null" in p["text"] for p in head["passages"])
     web.delete_file("mpls.txt")                               # the keyword index follows changes
     assert web.get_index().keyword_search("label 3 reserved", 3) == []
+
+
+def test_force_reindex_replaces_an_indexed_file(web):
+    upload(web, "book.txt", "LDP i\u2212 the default label di\u2212tribution protocol. " * 30)
+    index(web, "book.txt")
+    chunks = web.get_index().sources()["book.txt"]
+    assert "LDP is the default label distribution protocol" in web.get_index().documents[0]
+    bt = BackgroundTasks(); web.index_document("book.txt", bt, force=True); bt.run()
+    status = web.index_status("book.txt")
+    assert status["status"] == "done" and status["repaired_s"] == 60
+    assert web.get_index().sources()["book.txt"] == chunks          # replaced, not duplicated
+    assert len(web.get_index()) == chunks

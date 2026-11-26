@@ -98,21 +98,24 @@ def upload_path(name: str) -> str:
 
 
 # ─── Background indexing ──────────────────────────────────────────────────────
-def index_file_background(path: str):
+def index_file_background(path: str, force: bool = False):
     name = os.path.basename(path)
     try:
         indexing_status[name] = {"status": "indexing", "progress": 0, "chunks": 0}
         why = index_problem()
         if why:
             raise ValueError(f"The index needs rebuilding first ({why}).")
-        if name in get_index().sources():
+        if name in get_index().sources() and not force:
             indexing_status[name] = {"status": "done", "progress": 100,
                                      "chunks": get_index().sources()[name]}
             return
 
-        chunks = chunk_pages(extract_pages(path), settings.chunk_size, settings.chunk_overlap)
+        report = {}
+        chunks = chunk_pages(extract_pages(path, report), settings.chunk_size, settings.chunk_overlap)
         if not chunks:
             raise ValueError("No text found (scanned PDFs need OCR first)")
+        if report.get("repaired_s"):
+            print(f"{name}: repaired {report['repaired_s']} characters damaged by the PDF's font", flush=True)
 
         def progress(done, total):
             indexing_status[name] = {"status": "indexing", "progress": int(done / total * 100), "chunks": done}
@@ -126,7 +129,7 @@ def index_file_background(path: str):
             idx.delete_source(name)
             idx.add(vectors, [ch.text for ch in chunks], [_chunk_meta(name, ch) for ch in chunks])
             idx.save(INDEX_DIR)
-        indexing_status[name] = {"status": "done", "progress": 100, "chunks": len(chunks)}
+        indexing_status[name] = {"status": "done", "progress": 100, "chunks": len(chunks), **report}
     except (ExtractionError, OllamaError, ValueError, OSError) as e:
         indexing_status[name] = {"status": "error", "progress": 0, "chunks": 0, "error": str(e)}
     except Exception as e:                     # keep the server up; report the problem
@@ -228,7 +231,8 @@ def list_files():
 
 
 @app.post("/index/{filename}")
-def index_document(filename: str, background_tasks: BackgroundTasks):
+def index_document(filename: str, background_tasks: BackgroundTasks, force: bool = False):
+    """Index an uploaded file. force=true re-indexes a file that is already indexed."""
     fpath = upload_path(filename)
     if not os.path.isfile(fpath):
         raise HTTPException(404, f"File not found: {filename}")
@@ -238,7 +242,7 @@ def index_document(filename: str, background_tasks: BackgroundTasks):
         return {"filename": name, "status": "already_indexing"}
     # Mark it now, so a quick second click can't start a second indexing job.
     indexing_status[name] = {"status": "indexing", "progress": 0, "chunks": 0}
-    background_tasks.add_task(index_file_background, fpath)
+    background_tasks.add_task(index_file_background, fpath, force)
     return {"filename": name, "status": "started"}
 
 

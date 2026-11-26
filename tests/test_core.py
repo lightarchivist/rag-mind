@@ -87,6 +87,31 @@ def test_pdf_pages_are_numbered(tmp_path):
     assert [p for p, _ in extract_pages(str(tmp_path / "blank.pdf"))] == [1, 2]
 
 
+DAMAGED = ("LDP i\u2212 the default label di\u2212tribution protocol. Label 3 i\u2212 the implicit null "
+           "label, re\u2212erved for penultimate hop popping, \u2212uch a\u2212 an OAM me\u2212\u2212age. "
+           "Check the acce\u2212\u2212 li\u2212t. ")
+
+
+def test_broken_s_font_is_repaired_and_watermarks_removed(tmp_path):
+    report = {}
+    path = write(tmp_path / "book.txt", (DAMAGED + "From the Library of Jane Doe ptg12345678 ") * 10)
+    [(_, text)] = extract_pages(path, report)
+    assert "LDP is the default label distribution protocol" in text
+    assert "reserved for penultimate hop popping, such as an OAM message" in text
+    assert "Check the access list." in text
+    assert "\u2212" not in text and "From the Library" not in text and "ptg" not in text
+    assert report["repaired_s"] == 110 and report["watermarks"] == 10
+
+
+def test_real_minus_signs_are_left_alone(tmp_path):
+    maths = "With n\u22121 links and x \u2212 y = 3, the cost is small. " * 30   # plenty of real "s"
+    [(_, text)] = extract_pages(write(tmp_path / "paper.txt", maths), report := {})
+    assert text == maths and report["repaired_s"] == 0
+    few = "Only one odd i\u2212 here. " + "Normal sentences with s. " * 5
+    [(_, text)] = extract_pages(write(tmp_path / "few.txt", few))
+    assert text == few                                  # too few to be the font problem
+
+
 def test_pdf_page_rendering(tmp_path):
     pytest.importorskip("pypdfium2")
     import zlib

@@ -5,6 +5,15 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.4.2] - 2026-11-26
+
+### Fixed
+- Some PDFs use a font that maps the letter "s" to a minus sign, so their text was indexed as "the default label di−tribution protocol". Such passages could hardly be found, by keyword or by similarity. Documents where this happens throughout are now repaired when indexed; real minus signs are left alone. Re-index affected documents once (see below).
+- The buyer's watermark on eBooks ("From the Library of … ptg…") is removed from every page.
+
+### Added
+- Re-index one document without deleting it: `POST /index/<file>?force=true` in the web app, `rag_cli.py add --force FILE` in the CLI.
+
 ## [2.4.1] - 2026-11-26
 
 ### Fixed
