@@ -222,16 +222,20 @@ class ChromaStore:
             self.keys()
         return self._docs.get(key)
 
-    def opening(self, key, n) -> list[dict]:
-        """The first n chunks of a document (usually its title and abstract)."""
+    def chunk_count(self, key) -> int:
         doc = self._doc(key)
-        if not doc or not doc.get("file_hash"):
+        return doc["chunks"] if doc else 0
+
+    def chunk_range(self, key, start, stop) -> list[dict]:
+        """Chunks start..stop-1 of a document, in document order."""
+        doc = self._doc(key)
+        if not doc or not doc.get("file_hash") or stop <= start:
             return []
-        got = self.col.get(ids=[f"{doc['file_hash']}_{i}" for i in range(n)],
+        got = self.col.get(ids=[f"{doc['file_hash']}_{i}" for i in range(start, stop)],
                            include=["documents", "metadatas"])
         rows = sorted(zip(got["documents"], got["metadatas"]), key=lambda r: r[1].get("chunk_id", 0))
-        return [{"text": text, "source": m.get("source", "?"), "page": m.get("page"), "score": None}
-                for text, m in rows]
+        return [{"text": text, "source": m.get("source", "?"), "page": m.get("page"), "score": None,
+                 "chunk_id": m.get("chunk_id")} for text, m in rows]
 
     # ── listing ──
     def documents(self) -> list[dict]:

@@ -358,9 +358,11 @@ class FakeCorpus:
         hits = [{"text": t, "source": k, "page": i + 1, "score": 0.9 - i / 100}
                 for k in names for i, t in enumerate(reversed(self.docs[k]))]
         return sorted(hits, key=lambda h: -h["score"])[:n]
-    def opening(self, key, n):
-        return [{"text": t, "source": key, "page": i + 1, "score": None}
-                for i, t in enumerate(self.docs[key][:n])]
+    def chunk_count(self, key):
+        return len(self.docs[key])
+    def chunk_range(self, key, start, stop):
+        return [{"text": t, "source": key, "page": i + 1, "score": None, "chunk_id": i}
+                for i, t in enumerate(self.docs[key]) if start <= i < stop]
 
 
 def test_broad_question_uses_every_document(ollama):
@@ -484,3 +486,64 @@ def test_drifting_rewrite_still_finds_original_passages(ollama):
 def test_passage_labels_have_no_scores():
     prompt, _, _ = build_prompt("Q?", [chunk(1)], [], 8192)
     assert "relevance" not in prompt and "[1] (source: a.pdf, p. 1)" in prompt
+
+
+
+# ── summaries: abstract + conclusion; history only for follow-ups ─────────────
+def paper(name, findings):
+    chunks = [f"{name}. J. Smith a,*, A. Rossi b. a University of Naples, Department of Engineering. "
+              "E-mail: smith@unina.it. Received 3 May 2025; accepted 9 June 2025. doi 10.1016/x",
+              f"A B S T R A C T We study {name}. Our experiments show {findings}.",
+              f"1. Introduction {name} matters for industrial systems."]
+    chunks += [f"Section {i} discusses implementation details of {name}." for i in range(3, 40)]
+    chunks += [f"Further discussion of limitations. 6. Conclusions This paper presented {name}. "
+               f"The main result is that {findings}.",
+               "Future work will extend the evaluation to more datasets.",
+               "References [1] A. Author, Some title, 2024. [2] B. Author, Other title, 2023."]
+    return chunks
+
+
+def test_summary_includes_abstract_and_conclusion_not_title_page(ollama):
+    corpus = FakeCorpus({"a.pdf": paper("hierarchical agents", "recall rises 12% with round-table"),
+                         "b.pdf": paper("AI-enabled SDN", "latency drops by 30%")})
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3", "Summarise the key findings", [],
+                         lambda v, n: corpus.search(v, n), corpus=corpus)
+    assert p.broad
+    texts = " ".join(c["text"] for c in p.chunks)
+    assert "recall rises 12% with round-table" in texts and "latency drops by 30%" in texts
+    assert texts.count("6. Conclusions This paper presented") == 2
+    assert "smith@unina.it" not in texts and "References [1]" not in texts
+    assert "(source: a.pdf, p. 2, abstract)" in p.prompt and "conclusion)" in p.prompt
+
+
+@pytest.mark.parametrize("q,expected", [
+    ("Summarise the key findings", False),
+    ("tell me about those documents in low level", False),
+    ("What do these papers have in common?", False),
+    ("summarise it", True),
+    ("Explain the second point in more detail", True),
+    ("Why does the framework use a round-table discussion between supervisors?", False),
+])
+def test_followup_detection_with_broad_questions(q, expected):
+    assert pipeline.looks_like_followup(q) is expected
+
+
+def test_rewrite_rejects_list_items_and_echoed_answers(ollama):
+    client = OllamaClient(ollama.url)
+    history = [{"q": "Tell me about the papers", "a": "1. *Hierarchical framework* ..."}]
+    for reply in ["1. *Hierarchical Multi-Agent AI Framework for Cybersecurity",
+                  "- the second paper",
+                  "Line one\nLine two\nLine three\nLine four"]:
+        ollama.answers = [reply]
+        assert pipeline.rewrite_followup(client, "llama3", "and its limits?", history, 4096) == "and its limits?"
+
+
+def test_history_only_for_followups(ollama):
+    client = OllamaClient(ollama.url)
+    history = [{"q": "Summarise the documents", "a": "Both stress traceability (invented claim)."}]
+    complete = pipeline.prepare(client, Settings(), "llama3", "Summarise the key findings", history,
+                                lambda v, n: [])
+    assert "CONVERSATION SO FAR" not in complete.prompt and "invented claim" not in complete.prompt
+    ollama.answers = ["What are the limitations of the framework?"]
+    follow = pipeline.prepare(client, Settings(), "llama3", "and its limitations?", history, lambda v, n: [])
+    assert "CONVERSATION SO FAR" in follow.prompt

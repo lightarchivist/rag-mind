@@ -74,17 +74,25 @@ def context_window(client: OllamaClient, settings: Settings, model: str) -> int:
 _FOLLOWUP_WORDS = re.compile(
     r"\b(it|its|it's|they|them|their|this|that|these|those|he|she|his|her|there|"
     r"above|previous|earlier|former|latter|same|"
-    r"(the )?(first|second|third|last|other|which) one)\b", re.I)
-_FOLLOWUP_START = re.compile(r"^\s*(and|but|also|so|then|what about|how about|why|why not)\b", re.I)
+    r"(the )?(first|second|third|last|other|which) (one|point|item|step|part))\b", re.I)
+_FOLLOWUP_START = re.compile(r"^\s*(and|but|also|so|then|what about|how about)\b", re.I)
+_MORE = re.compile(r"\b(elaborate|expand on|more detail|in detail|explain further|go on|continue|"
+                   r"tell me more|why is that|why not)\b", re.I)
 
 
 def looks_like_followup(question: str) -> bool:
-    """Only questions that lean on the conversation are rewritten; a complete
+    """Does the question lean on the conversation? Only such questions are
+    rewritten before searching and shown the earlier conversation; a complete
     question ("How does the round-table protocol resolve conflicts?") is
-    searched exactly as asked."""
+    searched as asked and answered from the documents alone."""
     q = question.strip()
-    return (len(q.split()) <= 5 or bool(_FOLLOWUP_START.search(q))
-            or bool(_FOLLOWUP_WORDS.search(q)))
+    # "these papers", "both documents" point at the documents, not the conversation.
+    bare = _CORPUS_REF.sub(" ", q)
+    if _FOLLOWUP_WORDS.search(bare) or _FOLLOWUP_START.search(bare) or _MORE.search(bare):
+        return True
+    if is_broad(q):
+        return False                      # "Summarise the key findings" stands on its own
+    return len(q.split()) <= 5
 
 
 def rewrite_followup(client: OllamaClient, model: str, question: str,
@@ -99,10 +107,19 @@ def rewrite_followup(client: OllamaClient, model: str, question: str,
                                  "num_ctx": num_ctx})
     except OllamaError:
         return question
-    line = _first_answer_line(thinking.strip(reply))
+    reply = thinking.strip(reply)
+    lines = [l for l in reply.splitlines() if l.strip()]
+    # A rewrite is one sentence. Several lines, or a list item / heading, means the
+    # model answered or echoed the conversation instead (seen with ministral).
+    if not lines or len(lines) > 3 or _LIST_OR_HEADING.match(lines[0]):
+        return question
+    line = _first_answer_line(reply)
     if not line or len(line) > max(300, 4 * len(question)):
         return question
     return line
+
+
+_LIST_OR_HEADING = re.compile(r"^\s*(\d+[.)]\s|[-•#>|]|\*\s)")
 
 
 _LEAD_INS = ("rewritten question:", "standalone question:", "question:")
@@ -178,6 +195,8 @@ _BROAD = [
     # "what is this all about?", "what are they about?"
     re.compile(r"\bwhat (is|are) (it|they|this|these) (all )?about\b", re.I),
 ]
+# "these papers", "both documents": a reference to the indexed documents.
+_CORPUS_REF = re.compile(rf"\b(these|those|this|the|both|all|each|every)\b(\s+\w+){{0,3}}\s+{_DOC}s?\b", re.I)
 _SHORT_SUMMARY = re.compile(r"\b(summar\w*|overview|tl;?dr)\b", re.I)
 # Author-contribution (CRediT) lists: these terms rarely occur together elsewhere.
 _CREDIT_ROLES = re.compile(
@@ -187,7 +206,17 @@ _BOILERPLATE_HEADINGS = re.compile(
     r"^\s*(references|bibliography|acknowledge?ments?|declaration of competing interest|"
     r"credit authorship contribution statement|author contributions?|data availability)\b", re.I)
 MAX_BROAD_DOCS = 12
-OPENING_CHUNKS = 2
+HEAD_SCAN = 12          # chunks searched for the abstract
+TAIL_SCAN = 200         # chunks (from the end) searched for the conclusion
+
+# Section headings, as they appear in whitespace-normalised chunk text.
+_ABSTRACT = re.compile(r"\b(Abstract|ABSTRACT|A B S T R A C T)\b")
+_CONCLUSION = re.compile(
+    r"(?:^|[\s.])(?:\d+(?:\.\d+)*\.?\s+)?(Conclusions?|CONCLUSIONS?|Concluding [Rr]emarks|"
+    r"Summary and [Cc]onclusions?)(?:\s+and\s+[Ff]uture\s+\w+)?\s+(?=[A-Z])")
+_FRONT_MATTER = re.compile(
+    r"@|\buniversity\b|\bdepartment\b|\binstitute\b|\breceived\b|\baccepted\b|©|"
+    r"\bdoi\b|journal homepage|\bissn\b|corresponding author|\bkeywords?\b|A R T I C L E", re.I)
 
 
 def is_broad(question: str) -> bool:
@@ -206,20 +235,55 @@ def is_boilerplate(text: str) -> bool:
     return len(roles) >= 2
 
 
+def is_front_matter(text: str) -> bool:
+    """Title-page material: authors, affiliations, e-mails, journal details."""
+    return len({m.group(0).lower() for m in _FRONT_MATTER.finditer(text)}) >= 3
+
+
+def summary_chunks(corpus, key) -> list[dict]:
+    """A document's abstract and conclusion: where authors state their findings."""
+    n = corpus.chunk_count(key)
+    if n <= 0:
+        return []
+    head = corpus.chunk_range(key, 0, min(HEAD_SCAN, n))
+    abstract = []
+    for i, ch in enumerate(head):
+        if _ABSTRACT.search(ch["text"]):
+            abstract = head[i:i + 3]
+            break
+    if not abstract:                                  # no heading: first non-title-page chunks
+        abstract = [c for c in head[:4] if not is_front_matter(c["text"])][:2]
+
+    tail_start = max(len(head), n - TAIL_SCAN)
+    tail = corpus.chunk_range(key, tail_start, n) if tail_start < n else []
+    candidates = [c for c in head + tail if (c.get("chunk_id") or 0) >= n * 0.4]
+    conclusion = []
+    for i, ch in enumerate(candidates):
+        if _CONCLUSION.search(ch["text"]):
+            conclusion = [c for c in candidates[i:i + 2] if not is_boilerplate(c["text"])]
+            break
+    for ch in abstract:
+        ch["section"] = "abstract"
+    for ch in conclusion:
+        ch["section"] = "conclusion"
+    return abstract + conclusion
+
+
 def broad_chunks(corpus, vector, settings: Settings, keys: list[str]) -> list[dict]:
-    """Opening + best matches from each document, interleaved so that a tight
-    prompt budget still keeps something from every document."""
+    """Abstract, conclusion and best matches from each document, interleaved so
+    that a tight prompt budget still keeps something from every document."""
     keys = keys[:MAX_BROAD_DOCS]
-    per_doc = max(3, math.ceil(settings.top_k * 1.5 / len(keys)))
+    matches = max(2, math.ceil(settings.top_k / len(keys)))
     groups = []
     for key in keys:
         picked, seen = [], set()
-        for ch in corpus.opening(key, OPENING_CHUNKS) + corpus.search(vector, per_doc + 6, key):
-            if ch["text"] in seen or is_boilerplate(ch["text"]):
+        summary = summary_chunks(corpus, key)
+        for ch in summary + corpus.search(vector, matches + 6, key):
+            if ch["text"] in seen or is_boilerplate(ch["text"]) or is_front_matter(ch["text"]):
                 continue
             seen.add(ch["text"])
             picked.append(ch)
-            if len(picked) >= per_doc:
+            if len(picked) >= len(summary) + matches:
                 break
         groups.append(picked)
     interleaved = []
@@ -233,11 +297,17 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
             corpus=None) -> Prepared:
     """`corpus`, when given, enables broad questions. It needs:
     keys() -> document keys; search(vector, n, key) -> results within one
-    document; opening(key, n) -> the document's first n chunks."""
+    document; chunk_count(key) -> number of chunks; chunk_range(key, start, stop) ->
+    chunks in document order (with chunk_id)."""
     num_ctx = context_window(client, settings, model)
     history = [h for h in (history or []) if h.get("q") and h.get("a")]
+    # The conversation is used only for questions that depend on it. A complete
+    # question is answered from the documents alone, so claims from earlier
+    # answers can't leak in as if they were facts.
+    if not looks_like_followup(question):
+        history = []
     search_query = question
-    if history and settings.rewrite_followups:
+    if history and settings.rewrite_followups and not is_broad(question):
         search_query = rewrite_followup(client, model, question, history, num_ctx)
     vector = embed_query(client, settings, search_query)
 
@@ -246,7 +316,8 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
         chunks = broad_chunks(corpus, vector, settings, keys)
         names = list(dict.fromkeys(ch["source"] for ch in chunks))
         note = (f"The passages come from {len(names)} documents: " + "; ".join(names) +
-                ". Cover each document separately, then compare them if asked.")
+                ". Passages marked 'abstract' or 'conclusion' state each document's own findings. "
+                "Cover each document separately, then compare them if asked.")
         text, used, turns = P.build_prompt(question, chunks, history, num_ctx,
                                            settings.answer_reserve, settings.history_turns, note=note)
         return Prepared(text, used, search_query, num_ctx, turns, broad=True)

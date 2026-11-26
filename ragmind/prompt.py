@@ -31,7 +31,8 @@ def cite(chunk: dict) -> str:
 
 def format_passage(i: int, chunk: dict) -> str:
     # No similarity score here: models copied it into answers ("relevance: 0.78").
-    return f"[{i}] (source: {cite(chunk)})\n{chunk['text']}"
+    section = f", {chunk['section']}" if chunk.get("section") else ""
+    return f"[{i}] (source: {cite(chunk)}{section})\n{chunk['text']}"
 
 
 def _turn(h: dict) -> str:

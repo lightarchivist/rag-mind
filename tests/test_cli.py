@@ -295,6 +295,7 @@ def test_broad_question_covers_both_papers(cli, env, ollama, monkeypatch, capsys
     assert "Abstract. We propose" in prompt and "Abstract. Software-defined" in prompt
     assert "Funding acquisition" not in prompt
     assert "The passages come from 2 documents" in prompt
+    assert "(source: a.txt, abstract)" in prompt and "(source: b.txt, abstract)" in prompt
 
 
 def test_specific_question_uses_normal_search(cli, env, ollama, monkeypatch, capsys):

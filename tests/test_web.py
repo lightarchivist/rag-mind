@@ -195,6 +195,8 @@ def test_broad_question_covers_every_document(web, ollama):
     index(web, "a.txt"); index(web, "b.txt")
     head, _ = chat(web, "tell me about those documents in low level")
     assert head["documents"] == 2
+    prompt = ollama.calls("/api/generate")[-1]["prompt"]
+    assert "(source: a.txt, abstract)" in prompt and "(source: b.txt, abstract)" in prompt
     assert any(s.startswith("a.txt") for s in head["sources"]) and any(s.startswith("b.txt") for s in head["sources"])
     # Limited to one document with CONTEXT: normal search, no broad mode.
     head, _ = chat(web, "tell me about those documents", filter_source="a.txt")

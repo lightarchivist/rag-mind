@@ -321,11 +321,15 @@ class IndexCorpus:
         with index_lock:
             return get_index().query(vector, n, source_filter=key or "")
 
-    def opening(self, key, n):
+    def chunk_count(self, key):
         with index_lock:
-            rows = get_index().chunks_of(key)[:n]
-        return [{"text": text, "source": m["source"], "page": m.get("page"), "score": None}
-                for text, m in rows]
+            return get_index().sources().get(key, 0)
+
+    def chunk_range(self, key, start, stop):
+        with index_lock:
+            rows = get_index().chunks_of(key)[start:stop]
+        return [{"text": text, "source": m["source"], "page": m.get("page"), "score": None,
+                 "chunk_id": m.get("chunk_id")} for text, m in rows]
 
 
 @app.post("/chat/stream")
