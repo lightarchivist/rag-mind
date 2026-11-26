@@ -5,6 +5,13 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.1] - 2026-11-26
+
+### Fixed
+- The eBook watermark "From the Library of <name>" stayed in the text of some books: those whose PDF puts no-break spaces or a line break inside it, and those where a running header follows the name on most pages. It is now removed in all these cases. Re-index affected books once with `POST /index/<file>?force=true` (web) or `rag_cli.py add --force` (CLI).
+- In a chat limited to one document (CONTEXT), a short question such as "What are the main limitations?" was taken as a follow-up to the previous answer and rewritten into a different question. It is now answered as asked, about that document.
+- When a question names a document, the model is now told to answer in that document's own terms, and to say so when the question uses a term from another document.
+
 ## [3.0.0] - 2026-11-26
 
 **Rebuild the index once after updating**: click **Rebuild index** in the web app, or run `python rag_cli.py reindex`. Your files are re-read; nothing needs uploading again.

@@ -122,11 +122,13 @@ def _refers_within(text: str, match) -> bool:
     return len(first.split()) >= MIN_FIRST_CLAUSE and not _FOLLOWUP_WORDS.search(first)
 
 
-def looks_like_followup(question: str) -> bool:
+def looks_like_followup(question: str, one_document: bool = False) -> bool:
     """Does the question lean on the conversation? Only such questions are
     rewritten before searching and shown the earlier conversation; a complete
     question ("How does the round-table protocol resolve conflicts?") is
-    searched as asked and answered from the documents alone."""
+    searched as asked and answered from the documents alone. With the chat
+    limited to `one_document`, a short question ("What are the main
+    limitations?") is about that document, not about the last answer."""
     q = question.strip()
     # "these papers", "both documents" point at the documents, not the conversation.
     bare = _CORPUS_REF.sub(" ", q)
@@ -134,7 +136,7 @@ def looks_like_followup(question: str) -> bool:
     if (pointing or _THAT_REFERS.search(bare) or _FOLLOWUP_START.search(bare)
             or _MORE.search(bare)):
         return True
-    if is_broad(q):
+    if is_broad(q) or one_document:
         return False                      # "Summarise the key findings" stands on its own
     return len(q.split()) <= 5
 
@@ -815,8 +817,10 @@ def _named_note(keys: list[str], titles: dict) -> str:
     names = "; ".join(f"{os.path.basename(k)} (\"{titles[k]}\")" if titles.get(k) else os.path.basename(k)
                       for k in keys)
     if len(keys) == 1:
-        return (f"The question names one document: {names}. The passages come from it only; "
-                "if it does not say what the question asks, say so.")
+        return (f"The question names one document: {names}. The passages come from it only. "
+                "Answer in this document's own terms: if the question describes something with a "
+                "term this document does not use (it may come from another document), say so, "
+                "then give what this document does say.")
     return (f"The question names {len(keys)} documents: {names}. Passages from each are included. "
             "Keep apart what each document says, and say which one each point comes from.")
 
@@ -839,17 +843,17 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
     (with chunk_id). Optional: keyword_search(query, n[, key]) and titles()."""
     num_ctx = context_window(client, settings, model)
     history = [h for h in (history or []) if h.get("q") and h.get("a")]
+    keys = corpus.keys() if corpus is not None else []
     # The conversation is used only for questions that depend on it. A complete
     # question is answered from the documents alone, so claims from earlier
     # answers can't leak in as if they were facts.
-    if not looks_like_followup(question):
+    if not looks_like_followup(question, one_document=len(keys) == 1):
         history = []
     search_query = question
     if history and settings.rewrite_followups and not is_broad(question):
         search_query = rewrite_followup(client, model, question, history, num_ctx)
     vector = embed_query(client, settings, search_query)
 
-    keys = corpus.keys() if corpus is not None else []
     titles = corpus_titles(corpus) if len(keys) >= 2 else {}
     named = [k for k in documents_named(question, titles) or documents_named(search_query, titles) if k in keys]
 

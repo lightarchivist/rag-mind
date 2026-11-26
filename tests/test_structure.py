@@ -234,3 +234,16 @@ def test_followups_also_search_with_the_previous_answer(ollama):
                          "Explain the second step in more detail", history, search)
     assert len(searched) == 3
     assert any("second step sets the offset" in c["text"] for c in p.chunks)
+
+
+def test_short_questions_in_a_one_document_chat_are_not_followups(ollama):
+    assert pipeline.looks_like_followup("What are the main limitations?")
+    assert not pipeline.looks_like_followup("What are the main limitations?", one_document=True)
+    assert pipeline.looks_like_followup("And for targeted hellos?", one_document=True)
+    assert pipeline.looks_like_followup("What about its weight?", one_document=True)
+    corpus = Corpus({"a.pdf": [("6. Limitations", "Limits: no benchmarks.")]})
+    history = [{"q": "How does Table I rate the approaches?", "a": "Low, medium, high."}]
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(keyword_search=False), "llama3",
+                         "What are the main limitations?", history, lambda v, n: corpus.search(v, n),
+                         corpus=corpus)
+    assert p.search_query == "What are the main limitations?" and p.history_used == 0

@@ -135,6 +135,19 @@ def test_watermark_without_number_is_removed_when_it_repeats(tmp_path):
     assert out == few
 
 
+def test_watermark_with_odd_spacing_or_a_running_header_after_it(tmp_path):
+    # No-break spaces, the name on the line after "of", and a running header that
+    # follows the name on most pages but not all: the name goes from every page.
+    pages = []
+    for i in range(30):
+        mark = "From the\u00a0Library of\nJane\u00a0Q Doe" if i % 2 else "From the Library of Jane Q Doe"
+        header = f" Chapter {i}: Labels {500 + i}" if i % 5 else f" {500 + i} Cisco Guide"
+        pages.append(f"Page {i} text about MPLS.\n{mark}{header}\nBody of page {i}.\n")
+    [(_, out)] = extract_pages(write(tmp_path / "book.txt", "".join(pages)))
+    assert "Jane" not in out and "Doe" not in out and "Library" not in out
+    assert "Body of page 7." in out and "Labels 507" in out and "505 Cisco Guide" in out
+
+
 def test_real_minus_signs_are_left_alone(tmp_path):
     maths = "With n\u22121 links and x \u2212 y = 3, the cost is small. " * 30   # plenty of real "s"
     [(_, text)] = extract_pages(write(tmp_path / "paper.txt", maths), report := {})
