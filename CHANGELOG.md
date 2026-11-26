@@ -5,6 +5,15 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.3.0] - 2026-11-26
+
+### Added
+- View the PDF page behind a source: open a source tag and click **Show page** to see the page with its figures and diagrams, which text extraction leaves out. Click the image to open it full size. Pages are drawn on demand and cached.
+
+### Fixed
+- A follow-up such as "and the smallest one?" could be rewritten with a name taken from the previous answer, sending the search to the wrong place. Descriptions are now kept as asked.
+- Table labels recognise chapter-numbered tables in books ("Table 5-3"), and command output with IP addresses is no longer mistaken for a table.
+
 ## [2.2.1] - 2026-11-26
 
 ### Fixed

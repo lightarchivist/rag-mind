@@ -221,3 +221,37 @@ def test_sources_numbered_with_passages_and_single_document_filter(web, ollama):
     assert all(p["text"] and p["cite"] == s for p, s in zip(head["passages"], head["sources"]))
     head, _ = chat(web, "summarise the documents", filter_source="b.txt")
     assert "documents" not in head and all(s.startswith("b.txt") for s in head["sources"])
+
+
+def blank_pdf(path, pages=2):
+    pypdf = pytest.importorskip("pypdf")
+    w = pypdf.PdfWriter()
+    for _ in range(pages):
+        w.add_blank_page(200, 100)
+    w.write(str(path))
+
+
+def test_pdf_page_images(web, env):
+    pytest.importorskip("pypdfium2")
+    blank_pdf(env / "data" / "uploads" / "paper.pdf")
+    resp = web.page_image("paper.pdf", 2, width=400)
+    assert resp.media_type == "image/png" and resp.body.startswith(b"\x89PNG")
+    assert int.from_bytes(resp.body[16:20], "big") == 400            # IHDR width
+    cache = env / "data" / "page_cache"
+    assert len(list(cache.rglob("*.png"))) == 1
+    assert web.page_image("paper.pdf", 2, width=400).body == resp.body   # served from the cache
+    (env / "data" / "uploads" / "notes.txt").write_text("text")
+    # The path is reduced to a plain file name, so "../../etc/passwd.pdf" is simply not found.
+    for args, codes in [(("paper.pdf", 3), {404}), (("missing.pdf", 1), {404}), (("notes.txt", 1), {400}),
+                        (("../../etc/passwd.pdf", 1), {400, 404})]:
+        with pytest.raises(HTTPException) as e:
+            web.page_image(*args)
+        assert e.value.status_code in codes, args
+    web.delete_file("paper.pdf")                                     # its page images go too
+    assert not list(cache.rglob("*.png"))
+
+
+def test_passages_carry_file_and_page(web, ollama):
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    head, _ = chat(web, "What is the battery life?")
+    assert all(p["source"] == "a.txt" and "page" in p for p in head["passages"])

@@ -117,7 +117,24 @@ def rewrite_followup(client: OllamaClient, model: str, question: str,
     line = _first_answer_line(reply)
     if not line or len(line) > max(300, 4 * len(question)):
         return question
-    return line
+    return _keep_descriptions(question, line)
+
+
+# "the smallest model", "the best configuration": the user describes something
+# without naming it. Rewrites sometimes name it anyway, from the previous answer
+# ("the smallest model, Llama 3.1 8B,") and send the search to the wrong place.
+_DESCRIPTION = re.compile(r"\b(\w+est|best|worst|most|least|first|last|other|previous|next)\b", re.I)
+
+
+def _keep_descriptions(question: str, rewrite: str) -> str:
+    words = {w.lower() for w in _DESCRIPTION.findall(question)}
+    for word in words:
+        if not re.search(rf"\b{re.escape(word)}\b", rewrite, re.I):
+            return question                      # the description was replaced or dropped
+        # Drop a name put next to it: "smallest model, Llama 3.1 8B," / "smallest model (X)"
+        rewrite = re.sub(rf"(\b{re.escape(word)}\s+\w+)\s*(?:,[^,?]{{1,60}},|\([^)]{{1,60}}\)|[-–—:]\s*[A-Z][^,?]{{0,60}}(?=[,?]))",
+                         r"\1", rewrite, flags=re.I)
+    return re.sub(r"\s{2,}", " ", rewrite).strip()
 
 
 _LIST_OR_HEADING = re.compile(r"^\s*(\d+[.)]\s|[-•#>|]|\*\s)")
@@ -449,11 +466,14 @@ def with_preceding_text(corpus, chunks: list[dict]) -> list[dict]:
 # table's caption, so a passage that ends one table and starts another reads as
 # if the first table's numbers belonged to the second (Table 3's rows read as
 # part of Table 4). Each such passage is labelled with its own table.
-_CAPTION = re.compile(r"(?<![^\s.])(Table|TABLE)\s+(\d+|[IVX]+)\s*[.:]?\s+(?=[A-Z])")
+# "Table 4", "TABLE IV", and chapter-numbered "Table 5-3" / "Table 5.3" (books).
+_CAPTION = re.compile(r"(?<![^\s.])(Table|TABLE)\s+(\d+(?:[-–.]\d+)?|[IVX]+)\s*[.:]?\s+(?=[A-Z])")
 _NOT_CAPTION_AFTER = {"in", "see", "of", "and", "to", "from", "with", "by", "per", "as", "on",
                       "under", "shown", "listed", "reported", "summarized", "summarised", "given",
                       "following", "next", "previous", "this", "that", "the"}
-_NUMBER = re.compile(r"^[(\[]?[-+±]?\d+(?:[.,]\d+)*%?[)\]]?[,;]?$")
+# A number in a table cell: 42, 3.15%, 1,024, (0.5). Not an IP address (10.1.1.1)
+# or a time (00:01:02): command output is not a table.
+_NUMBER = re.compile(r"^[(\[]?[-+±]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:[.,]\d+)?)%?[)\]]?[,;]?$")
 TABLE_SCAN = 8          # chunks searched for the caption of the table a passage starts in
 _PLACEMENTS: dict = {}
 

@@ -211,6 +211,14 @@
   .source-passage { flex-basis: 100%; font-size: 12px; line-height: 1.6; color: var(--text2);
     background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--accent);
     border-radius: 6px; padding: 8px 12px; white-space: pre-wrap; }
+  .page-btn { display: block; margin-top: 10px; font-family: var(--mono); font-size: 10px; padding: 3px 10px;
+    background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent);
+    border-radius: 4px; cursor: pointer; }
+  .page-btn:hover { border-color: var(--accent); }
+  .page-view { display: block; margin-top: 8px; white-space: normal; }
+  .page-img { display: block; max-width: 100%; height: auto; background: #fff;
+    border: 1px solid var(--border); border-radius: 4px; cursor: zoom-in; }
+  .page-missing { font-size: 11px; color: var(--muted); }
   .source-passage .src-head { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-bottom: 4px; }
   .typing { display: flex; gap: 4px; align-items: center; padding: 10px 14px; }
   .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce .8s infinite; }
@@ -946,6 +954,38 @@ function togglePassage(div, tag, id, items) {
     body.textContent = passage.text;
     box.appendChild(body);
   });
+  // The PDF page itself, for the figures and diagrams that text extraction leaves out.
+  const first = items[0] && items[0].passage;
+  if (first && first.page && /\.pdf$/i.test(first.source || '')) {
+    const btn = document.createElement('button');
+    btn.className = 'page-btn';
+    btn.textContent = `Show page ${first.page}`;
+    const url = w => `/page/${encodeURIComponent(first.source)}/${first.page}?width=${w}`;
+    btn.onclick = () => {
+      const shown = box.querySelector('.page-view');
+      if (shown) { shown.remove(); btn.textContent = `Show page ${first.page}`; return; }
+      const link = document.createElement('a');
+      link.className = 'page-view';
+      link.href = url(2000); link.target = '_blank'; link.rel = 'noopener';
+      link.title = 'Open the page full size in a new tab';
+      const img = document.createElement('img');
+      img.className = 'page-img';
+      img.alt = `Page ${first.page} of ${first.source}`;
+      img.src = url(1000);
+      img.onerror = async () => {
+        let msg = 'The page image is not available.';
+        try { const r = await fetch(url(1000)); msg = (await r.json()).detail || msg; } catch {}
+        const note = document.createElement('div');
+        note.className = 'page-view page-missing';
+        note.textContent = msg;
+        link.replaceWith(note);
+      };
+      link.appendChild(img);
+      box.appendChild(link);
+      btn.textContent = `Hide page ${first.page}`;
+    };
+    box.appendChild(btn);
+  }
   div.appendChild(box);
   tag.classList.add('open');
 }

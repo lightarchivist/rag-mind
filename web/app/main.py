@@ -11,7 +11,7 @@ import sys
 import threading
 from typing import Iterator
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -21,7 +21,7 @@ try:
 except ImportError:                       # running from a git checkout: use the repo copy
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from ragmind import __version__, changelog, pipeline, thinking
+from ragmind import __version__, changelog, pages, pipeline, thinking
 from ragmind.chunking import chunk_pages
 from ragmind.config import Settings, load_settings
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
@@ -31,6 +31,7 @@ from ragmind.prompt import cite, tidy_citations
 
 DATA_DIR   = os.getenv("DATA_DIR", "/data")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+PAGE_CACHE = os.path.join(DATA_DIR, "page_cache")   # rendered PDF pages
 INDEX_DIR  = DATA_DIR                    # index.npz + index.json (was index.pkl)
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -297,6 +298,7 @@ def delete_file(filename: str):
         if idx.delete_source(name):
             idx.save(INDEX_DIR)
     os.remove(fpath)
+    shutil.rmtree(pages.cache_folder(PAGE_CACHE, name), ignore_errors=True)
     indexing_status.pop(name, None)
     return {"deleted": name}
 
@@ -366,7 +368,8 @@ def chat_stream(req: ChatRequest):
 
     # Numbered in prompt order, so "[2]" in an answer is the second source tag.
     header = {"sources": [cite(ch) for ch in prepared.chunks],
-              "passages": [{"cite": cite(ch), "section": ch.get("section", ""), "text": ch["text"]}
+              "passages": [{"cite": cite(ch), "section": ch.get("section", ""), "text": ch["text"],
+                            "source": ch["source"], "page": ch.get("page")}
                            for ch in prepared.chunks],
               "model": short(model.name)}
     if prepared.search_query != req.question:
@@ -387,6 +390,24 @@ def chat_stream(req: ChatRequest):
             yield f"\n[ERROR: {e}]"
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+
+@app.get("/page/{filename}/{page}")
+def page_image(filename: str, page: int, width: int = pages.DEFAULT_WIDTH):
+    """A PDF page as a PNG, so a passage's figures and diagrams can be seen."""
+    path = upload_path(filename)
+    if not path.lower().endswith(".pdf"):
+        raise HTTPException(400, "Page images are only available for PDFs")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "The original file is no longer in the library")
+    try:
+        png = pages.page_png(path, page, width, PAGE_CACHE)
+    except pages.RendererMissing as e:
+        raise HTTPException(501, str(e))
+    except pages.PageError as e:
+        raise HTTPException(404, str(e))
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/health")

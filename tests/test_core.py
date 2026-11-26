@@ -87,6 +87,35 @@ def test_pdf_pages_are_numbered(tmp_path):
     assert [p for p, _ in extract_pages(str(tmp_path / "blank.pdf"))] == [1, 2]
 
 
+def test_pdf_page_rendering(tmp_path):
+    pytest.importorskip("pypdfium2")
+    import zlib
+    from ragmind import pages
+    pypdf = pytest.importorskip("pypdf")
+    w = pypdf.PdfWriter()
+    w.add_blank_page(200, 100)
+    w.write(str(tmp_path / "p.pdf"))
+    png = pages.render(str(tmp_path / "p.pdf"), 1, width=300)
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height = int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+    assert (width, height) == (300, 150)
+    with pytest.raises(pages.PageError, match="has no page 2"):
+        pages.render(str(tmp_path / "p.pdf"), 2)
+    with pytest.raises(pages.PageError, match="Could not open"):
+        pages.render(write(tmp_path / "bad.pdf", "not a pdf"), 1)
+
+
+def test_png_encoder():
+    import zlib
+    from ragmind import pages
+    pixels = np.zeros((2, 3, 3), dtype=np.uint8)
+    pixels[1, 2] = (255, 0, 0)
+    png = pages.png_bytes(pixels)
+    idat = png[png.index(b"IDAT") + 4:png.index(b"IEND") - 8]
+    raw = zlib.decompress(idat)
+    assert len(raw) == 2 * (1 + 3 * 3) and raw[-3:] == b"\xff\x00\x00"
+
+
 # ── prompt budget ─────────────────────────────────────────────────────────────
 def chunk(i, n=500, score=0.9):
     return {"text": f"passage{i} " + "x" * n, "source": "a.pdf", "page": i, "score": score}
@@ -647,6 +676,17 @@ def test_table_rows_are_labelled_with_their_own_caption():
     assert pipeline.label_tables(corpus, [prose])[0]["text"] == "The discussion of these results follows."
 
 
+def test_book_style_tables_and_command_output():
+    text = ("as listed in Table 5-3. Table 5-3 MPLS Label Ranges Platform Range IOS 16 1048575 "
+            "Table 5.4: LDP Timers Hello 5 15 Holdtime 15 45")
+    assert [t.split(":")[0] for _, t in pipeline.captions(text)] == ["Table 5-3", "Table 5.4"]
+    routes = ("O 10.1.1.0/24 [110/2] via 10.0.0.2, 00:01:02, Gi0/0 O 10.1.2.0/24 [110/3] via 10.0.0.6, "
+              "00:01:05, Gi0/1 ip address 192.168.1.1 255.255.255.0 neighbor 10.0.0.1 remote-as 65000")
+    assert not pipeline.has_table_rows(routes)
+    assert pipeline.has_table_rows("Qwen 4B 71.2% 64.1% 85.3% 73.2% 38.4% Llama 8B 90.1% 84.5% 100%")
+    assert pipeline.has_table_rows("Region 1,024 2,048 4,096 8,192 16,384 32,768")
+
+
 def test_captions_below_tables_label_rows_with_the_next_caption():
     corpus = FakeCorpus({"b.pdf": tables_paper(captions_above=False)})
     assert pipeline.caption_placement(corpus, "b.pdf") == "below"
@@ -701,6 +741,19 @@ def test_citation_brackets_and_grouped_sources():
               {"source": "a.pdf", "page": 9, "section": "", "text": "w"}]
     assert group_sources(chunks) == [([1, 3], "a.pdf, p. 1", "abstract"), ([2], "b.pdf, p. 1", "abstract"),
                                      ([4], "a.pdf, p. 9", "")]
+
+
+def test_rewrite_keeps_descriptions_unnamed(ollama):
+    history = [{"q": "Which model performed best?", "a": "Model B on dataset X [1]."}]
+    client = OllamaClient(ollama.url)
+    ollama.answers = ["How did the smallest model, Model B, compare to the others on dataset X?"]
+    assert pipeline.rewrite_followup(client, "llama3", "And how did the smallest model compare?",
+                                     history, 4096) == \
+        "How did the smallest model compare to the others on dataset X?"
+    ollama.answers = ["How did Model B compare on dataset X?"]          # description replaced
+    assert pipeline.rewrite_followup(client, "llama3", "And how did the smallest model compare?",
+                                     history, 4096) == "And how did the smallest model compare?"
+    assert "do not replace them with a name" in ollama.calls("/api/generate")[-1]["prompt"]
 
 
 def test_rewrite_gets_room_for_models_that_think(ollama):

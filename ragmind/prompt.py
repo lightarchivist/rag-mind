@@ -106,6 +106,8 @@ def build_prompt(question: str, chunks: list[dict], history: list[dict],
 
 REWRITE = """Rewrite the user's latest question so it can be understood without the conversation.
 Replace words like "it", "that", "the second one" with what they refer to.
+Keep descriptions such as "the smallest model" or "the best method" as they are: do not replace them with a name, and do not guess which one they mean.
+Do not add facts, names or numbers that the latest question does not refer to.
 If the question is already self-contained, return it unchanged.
 Reply with the rewritten question only, on one line.
 

@@ -54,3 +54,11 @@ class FastAPI:
 
     def mount(self, *a, **kw):
         pass
+
+
+class Response:
+    def __init__(self, content=b"", media_type=None, status_code=200, headers=None):
+        self.body = content
+        self.media_type = media_type
+        self.status_code = status_code
+        self.headers = headers or {}

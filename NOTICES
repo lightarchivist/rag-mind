@@ -11,3 +11,11 @@ nomic-embed-text
 Copyright (c) Nomic, Inc.
 Licence: Apache 2.0
 URL: https://huggingface.co/nomic-ai/nomic-embed-text-v1
+
+pypdfium2 and PDFium (web app: page images)
+-------------------------------------------
+pypdfium2: Licence: BSD-3-Clause and Apache 2.0
+It bundles PDFium (Copyright 2014 The PDFium Authors, BSD-3-Clause) and libraries
+PDFium uses (such as FreeType, libjpeg-turbo and ICU); their licences are
+installed with the pypdfium2 package.
+URL: https://github.com/pypdfium2-team/pypdfium2
