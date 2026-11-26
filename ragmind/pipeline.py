@@ -203,6 +203,27 @@ def select(results: list[dict], top_k: int, min_score: float) -> list[dict]:
     return [r for r in ranked if r["score"] >= min_score][:top_k]
 
 
+RRF_K = 60              # reciprocal rank fusion constant (the usual value)
+
+
+def fuse(similar: list[dict], keyword: list[dict], top_k: int, min_score: float) -> list[dict]:
+    """Merge similarity and keyword rankings (reciprocal rank fusion). A passage
+    found only by similarity must still reach `min_score`; one that contains the
+    question's distinctive words is kept either way."""
+    entries: dict = {}
+    ranked = sorted(similar, key=lambda r: r["score"], reverse=True)
+    for rank, r in enumerate(ranked):
+        e = entries.setdefault(r["text"], {"chunk": r, "rrf": 0.0, "keep": False})
+        e["rrf"] += 1 / (RRF_K + rank + 1)
+        e["keep"] = e["keep"] or r["score"] >= min_score
+    for rank, r in enumerate(keyword):
+        e = entries.setdefault(r["text"], {"chunk": r, "rrf": 0.0, "keep": True})
+        e["rrf"] += 1 / (RRF_K + rank + 1)
+        e["keep"] = True
+    best = sorted((e for e in entries.values() if e["keep"]), key=lambda e: -e["rrf"])
+    return [e["chunk"] for e in best[:top_k]]
+
+
 @dataclass
 class Prepared:
     prompt: str
@@ -246,6 +267,7 @@ MAX_BROAD_DOCS = 12
 HEAD_SCAN = 16          # chunks searched for the abstract
 TAIL_SCAN = 200         # chunks (from the end) searched for conclusion, appendix, references
 MAX_SECTION = 8         # chunks taken from the abstract and from the conclusion
+SHORT_DOC = 150         # chunks (about 25 pages): longer documents without an abstract are books
 
 # Section headings, as they appear in whitespace-normalised chunk text.
 _ABSTRACT = re.compile(r"\b(Abstract|ABSTRACT|A B S T R A C T)\b")
@@ -261,6 +283,12 @@ _CONCLUSION = re.compile(
 _APPENDIX = re.compile(r"\b(Appendix|APPENDIX)\s+[A-Z]\.?\s+(?=[A-Z][a-z])")
 _REFERENCES = re.compile(r"(?:^|\s)(References|REFERENCES|Bibliography|BIBLIOGRAPHY)\s+(?=\[\s?1\s?\]|1\.\s)")
 _ASKS_ABOUT_REFERENCES = re.compile(r"\b(reference|cite[sd]?|citation|bibliograph)", re.I)
+# Publisher pages in books: companion websites, access codes, offers.
+_PUBLISHER = re.compile(
+    r"companion web ?site|access code|pearson test prep|practice test software|"
+    r"register (?:your|this) (?:book|product)|\bisbn\b|coupon|discount code|special offers?|"
+    r"exclusive offers?|video training|informit|study planner|flash ?cards|premium edition|"
+    r"bonus (?:content|material)|newsletter", re.I)
 _FRONT_MATTER = re.compile(
     r"@|\buniversity\b|\bdepartment\b|\binstitute\b|\breceived\b|\baccepted\b|©|"
     r"\bdoi\b|journal homepage|\bissn\b|corresponding author|\bkeywords?\b|A R T I C L E", re.I)
@@ -281,7 +309,9 @@ def is_boilerplate(text: str) -> bool:
     if _BOILERPLATE_HEADINGS.search(text):
         return True
     roles = {m.group(1).lower().split()[0] for m in _CREDIT_ROLES.finditer(text)}
-    return len(roles) >= 2
+    if len(roles) >= 2:
+        return True
+    return len({m.group(0).lower() for m in _PUBLISHER.finditer(text)}) >= 2
 
 
 def is_front_matter(text: str) -> bool:
@@ -297,7 +327,8 @@ def doc_layout(corpus, key) -> dict:
     cache_key = (key, n, head[0]["text"][:80] if head else "")
     if cache_key in _LAYOUTS:
         return _LAYOUTS[cache_key]
-    layout = {"abstract": [], "conclusion": [], "appendix_start": None, "references_start": None}
+    layout = {"abstract": [], "conclusion": [], "appendix_start": None, "references_start": None,
+              "book": False}
     if n <= 0:
         return layout
 
@@ -310,8 +341,14 @@ def doc_layout(corpus, key) -> dict:
                 if _INTRO.search(c["text"]):
                     break
             break
-    if not layout["abstract"]:                        # no heading: first non-title-page chunks
-        layout["abstract"] = [c for c in head[:6] if not is_front_matter(c["text"])][:3]
+    # No abstract heading: a short document (notes, a report) is represented by its
+    # opening; a long one (a book) by nothing here, since its first pages are
+    # copyright notices, contents and publisher offers, not findings.
+    paper_like = bool(layout["abstract"]) or n <= SHORT_DOC
+    if not layout["abstract"] and paper_like:
+        layout["abstract"] = [c for c in head[:6] if not is_front_matter(c["text"])
+                              and not is_boilerplate(c["text"])][:3]
+    layout["book"] = not paper_like
 
     tail_start = max(len(head), n - TAIL_SCAN)
     tail = corpus.chunk_range(key, tail_start, n) if tail_start < n else []
@@ -320,7 +357,8 @@ def doc_layout(corpus, key) -> dict:
         cid = c.get("chunk_id") or 0
         if layout["references_start"] is None and cid >= n * 0.5 and _REFERENCES.search(c["text"]):
             layout["references_start"] = cid
-    conclusion_at = next((i for i, c in enumerate(body) if _CONCLUSION.search(c["text"])), None)
+    conclusion_at = None if layout["book"] else \
+        next((i for i, c in enumerate(body) if _CONCLUSION.search(c["text"])), None)
     if conclusion_at is not None:
         start_id = body[conclusion_at].get("chunk_id") or 0
         for c in body[conclusion_at:]:
@@ -640,20 +678,34 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
                                            settings.answer_reserve, settings.history_turns, note=note)
         return Prepared(text, used, search_query, num_ctx, turns, broad=True)
 
-    results = search(vector, settings.top_k)
+    hybrid = settings.keyword_search and corpus is not None and hasattr(corpus, "keyword_search")
+    pool = settings.top_k * 2 if hybrid else settings.top_k
+    results = search(vector, pool)
     if search_query != question:
         # A rewrite can drift from what was asked; search with the original
         # wording too and keep the best of both.
         merged = {}
-        for r in results + search(embed_query(client, settings, question), settings.top_k):
+        for r in results + search(embed_query(client, settings, question), pool):
             if r["text"] not in merged or r["score"] > merged[r["text"]]["score"]:
                 merged[r["text"]] = r
         results = list(merged.values())
-    if corpus is not None and not _ASKS_ABOUT_REFERENCES.search(question):
+    words = []
+    if hybrid:
+        words = corpus.keyword_search(question if search_query == question
+                                      else f"{search_query} {question}", pool)
+
+    def outside_reference_lists(rows):
         # Reference lists match many questions on wording alone ("FWOS" came from one).
-        results = [r for r in results if r.get("key") is None or not in_back_matter(
+        if corpus is None or _ASKS_ABOUT_REFERENCES.search(question):
+            return rows
+        return [r for r in rows if r.get("key") is None or not in_back_matter(
             doc_layout(corpus, r["key"]), r.get("chunk_id"), include_appendix=False)]
-    chunks = select(results, settings.top_k, settings.min_score)
+
+    results, words = outside_reference_lists(results), outside_reference_lists(words)
+    if hybrid:
+        chunks = fuse(results, words, settings.top_k, settings.min_score)
+    else:
+        chunks = select(results, settings.top_k, settings.min_score)
     if corpus is not None and (asks_about_authors(question) or asks_about_authors(search_query)):
         front = [ch for key in named_documents(question + " " + search_query, corpus.keys(), results)
                  for ch in title_page_chunks(corpus, key)]

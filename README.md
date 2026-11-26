@@ -6,9 +6,9 @@ Ask natural language questions across PDFs, EPUBs, books, and documents using Ll
 
 [![Licence: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-lightarchivist%2Frag--mind-blue)](https://hub.docker.com/r/lightarchivist/rag-mind)
-[![Version](https://img.shields.io/badge/version-2.3.1-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.4.0-green)](CHANGELOG.md)
 
-**Version 2.3.1.** See [CHANGELOG.md](CHANGELOG.md) for what's new and what was fixed in each
+**Version 2.4.0.** See [CHANGELOG.md](CHANGELOG.md) for what's new and what was fixed in each
 version. The web app shows the current version and its changes under **About**, and the CLI
 prints it with `python rag_cli.py --version`.
 
@@ -21,7 +21,7 @@ What started as a small assignment at ATU has grown into a fully functional loca
 ## Features
 
 -  Upload PDF, EPUB, DOCX, TXT, Markdown
--  Semantic search using nomic-embed-text embeddings
+-  Hybrid search: nomic-embed-text similarity plus keyword (BM25) search for exact terms
 -  Streaming answers grounded strictly in your documents, citing file and page
 -  Click a source to read the passage, and view the PDF page itself with its figures and diagrams
 -  Switch between any chat models installed in Ollama
@@ -128,6 +128,7 @@ rag-mind/
 │   ├── chunking.py         ← Overlapping, sentence-aware chunks
 │   ├── prompt.py           ← Prompt building within the model's context window
 │   ├── pipeline.py         ← Retrieval: follow-up rewriting, search, filtering, grading
+│   ├── keyword.py          ← Keyword (BM25) search, combined with similarity search
 │   ├── numpy_index.py      ← The web app's vector index
 │   ├── thinking.py         ← Hides reasoning models' thinking
 │   ├── pages.py            ← Draws PDF pages, so figures can be shown (web app)
@@ -199,9 +200,10 @@ Environment variables override `~/.ragmind/config.json` (the web app reads
 | `RAG_CLI_DB` | `~/.rag_cli_db` | CLI index folder |
 | `RAGMIND_MAX_CTX` | `8192` | Largest context window to request (more = more memory) |
 | `RAGMIND_TOP_K` | `6` | Passages retrieved per question |
-| `RAGMIND_MIN_SCORE` | `0.25` | Ignore passages less similar than this |
+| `RAGMIND_MIN_SCORE` | `0.25` | Ignore passages less similar than this (unless they contain the question's distinctive words) |
 | `RAGMIND_REWRITE` | `1` | Rewrite follow-up questions before searching |
 | `RAGMIND_GRADE` | `0` | Ask the model to filter passages (more accurate, slower) |
+| `RAGMIND_KEYWORDS` | `1` | Combine similarity search with keyword search, which finds exact terms ("label 3", "UDP 646") |
 | `RAGMIND_TIMEOUT` | `600` | Seconds to wait for Ollama |
 
 ### Upgrading from 1.x

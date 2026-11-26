@@ -46,6 +46,7 @@ from ragmind.config import ENV, Settings, default_config_path, load_settings, sa
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
 from ragmind.ollama import (ModelInfo, ModelNotFound, NotAChatModel, OllamaClient,
                             OllamaError, OllamaUnavailable, short)
+from ragmind.keyword import KeywordIndex
 from ragmind.prompt import cite, group_sources, tidy_citations
 
 # ─── Colours ──────────────────────────────────────────────────────────────────
@@ -144,6 +145,7 @@ class ChromaStore:
         """Index one file. Returns {"status": added|unchanged|duplicate|empty, ...}.
         New chunks are stored before old ones are removed, so a failure part-way
         never loses the previously indexed version."""
+        self._keywords = None               # keyword index is rebuilt after changes
         if not os.path.isfile(path):
             raise CLIError(f"File not found: {path}")
         self.require_usable()
@@ -213,6 +215,19 @@ class ChromaStore:
                  "chunk_id": meta.get("chunk_id")}
                 for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0])]
 
+    def keyword_search(self, query, n) -> list[dict]:
+        """Passages containing the query's distinctive words (BM25), best first.
+        The keyword index is built from the collection on first use and rebuilt
+        after any change."""
+        stamp = (self.collection_name, self.count())
+        if getattr(self, "_keywords", None) is None or self._keywords[0] != stamp:
+            got = self.col.get(include=["documents", "metadatas"])
+            self._keywords = (stamp, KeywordIndex(got["documents"]), got["documents"], got["metadatas"])
+        _, index, texts, metas = self._keywords
+        return [{"text": texts[i], "source": metas[i].get("source", "?"), "page": metas[i].get("page"),
+                 "score": None, "key": metas[i].get("path") or metas[i].get("source"),
+                 "chunk_id": metas[i].get("chunk_id")} for i, _ in index.search(query, n)]
+
     # ── corpus interface for broad questions (see pipeline.prepare) ──
     def keys(self) -> list[str]:
         self._docs = {d["path"] or d["source"]: d for d in self.documents()}
@@ -257,6 +272,7 @@ class ChromaStore:
         return [col if isinstance(col, str) else col.name for col in self.db.list_collections()]
 
     def clear(self) -> int:
+        self._keywords = None               # keyword index is rebuilt after changes
         removed = 0
         for name in self._collection_names():
             if name == LEGACY_COLLECTION or name.startswith(LEGACY_COLLECTION + "_"):
@@ -270,6 +286,7 @@ class ChromaStore:
     def reindex(self, ollama: OllamaClient, report=print) -> dict:
         """Rebuild every document with the current settings into a new collection,
         then switch to it. If anything fails, the old index is left untouched."""
+        self._keywords = None               # keyword index is rebuilt after changes
         old_name = self.collection_name
         for name in self._collection_names():      # leftovers from an interrupted rebuild
             if name.startswith(LEGACY_COLLECTION + "_") and name != old_name:

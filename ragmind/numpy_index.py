@@ -13,6 +13,8 @@ import pickle
 
 import numpy as np
 
+from .keyword import KeywordIndex
+
 NPZ, JSON, LEGACY = "index.npz", "index.json", "index.pkl"
 
 
@@ -22,6 +24,7 @@ class NumpyIndex:
         self.documents: list[str] = []
         self.metadatas: list[dict] = []
         self.signature = signature
+        self._keywords = None           # built on first keyword search, dropped on change
 
     def __len__(self):
         return len(self.documents)
@@ -82,6 +85,7 @@ class NumpyIndex:
             self.vectors = np.vstack([self.vectors, new])
         self.documents.extend(documents)
         self.metadatas.extend(metadatas)
+        self._keywords = None
 
     def delete_source(self, source: str) -> int:
         keep = [i for i, m in enumerate(self.metadatas) if m["source"] != source]
@@ -90,6 +94,7 @@ class NumpyIndex:
             self.vectors = self.vectors[keep] if keep else np.zeros((0, 0), dtype=np.float32)
             self.documents = [self.documents[i] for i in keep]
             self.metadatas = [self.metadatas[i] for i in keep]
+            self._keywords = None
         return removed
 
     # ── reading ──
@@ -121,6 +126,21 @@ class NumpyIndex:
                  "key": self.metadatas[rows[i]]["source"],
                  "chunk_id": self.metadatas[rows[i]].get("chunk_id")}
                 for i in top]
+
+
+    def keyword_search(self, query: str, n: int, source_filter: str = "") -> list[dict]:
+        """Passages containing the query's distinctive words (BM25), best first."""
+        if len(self) == 0 or n < 1:
+            return []
+        if self._keywords is None or self._keywords.size != len(self):
+            self._keywords = KeywordIndex(self.documents)
+        allowed = None
+        if source_filter:
+            allowed = {i for i, m in enumerate(self.metadatas) if m["source"] == source_filter}
+        return [{"text": self.documents[i], "source": self.metadatas[i]["source"],
+                 "page": self.metadatas[i].get("page"), "score": None,
+                 "key": self.metadatas[i]["source"], "chunk_id": self.metadatas[i].get("chunk_id")}
+                for i, _ in self._keywords.search(query, n, allowed)]
 
 
 class _LegacyVectorIndex:

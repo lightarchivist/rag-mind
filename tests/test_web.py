@@ -255,3 +255,19 @@ def test_passages_carry_file_and_page(web, ollama):
     upload(web, "a.txt", BOOK); index(web, "a.txt")
     head, _ = chat(web, "What is the battery life?")
     assert all(p["source"] == "a.txt" and "page" in p for p in head["passages"])
+
+
+def test_keyword_search_finds_exact_terms_and_respects_the_filter(web, ollama):
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    upload(web, "mpls.txt", "General routing notes. " * 40 +
+           "Labels 0 to 15 are reserved; label 3 is implicit null for penultimate hop popping. " +
+           "More general routing notes. " * 40)
+    index(web, "mpls.txt")
+    idx = web.get_index()
+    hits = idx.keyword_search("Which label values are reserved, and what is label 3?", 3)
+    assert hits and "implicit null" in hits[0]["text"]
+    assert idx.keyword_search("Which label values are reserved?", 3, source_filter="a.txt") == []
+    head, _ = chat(web, "Which label values are reserved, and what is label 3 used for?")
+    assert any("implicit null" in p["text"] for p in head["passages"])
+    web.delete_file("mpls.txt")                               # the keyword index follows changes
+    assert web.get_index().keyword_search("label 3 reserved", 3) == []

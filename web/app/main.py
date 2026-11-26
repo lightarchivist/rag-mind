@@ -329,6 +329,10 @@ class IndexCorpus:
         with index_lock:
             return get_index().query(vector, n, source_filter=key or "")
 
+    def keyword_search(self, query, n):
+        with index_lock:
+            return get_index().keyword_search(query, n, source_filter=self.only)
+
     def chunk_count(self, key):
         with index_lock:
             return get_index().sources().get(key, 0)

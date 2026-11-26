@@ -314,3 +314,16 @@ def test_reasoning_model_thinking_is_hidden_in_cli(cli, env, ollama, monkeypatch
     out = capsys.readouterr().out
     assert "(thinking…)" in out and "The battery lasts 14 hours." in out
     assert "Let me check the passages" not in out
+
+
+def test_keyword_search_in_cli_store(cli, env):
+    write(env / "docs" / "mpls.txt", "General routing notes. " * 40 +
+          "Labels 0 to 15 are reserved; label 3 is implicit null for penultimate hop popping. " +
+          "More general routing notes. " * 40)
+    write(env / "docs" / "other.txt", "Unrelated text about laptops and batteries. " * 60)
+    assert cli.main(["folder", str(env / "docs")]) == 0
+    s = store(cli)
+    hits = s.keyword_search("Which MPLS label values are reserved, and what is label 3 used for?", 3)
+    assert hits and "implicit null" in hits[0]["text"] and hits[0]["source"] == "mpls.txt"
+    assert hits[0]["key"].endswith("mpls.txt") and hits[0]["chunk_id"] is not None
+    assert s.keyword_search("capital of France", 3) == []

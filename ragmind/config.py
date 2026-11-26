@@ -15,6 +15,7 @@ ENV = {
     "min_score": "RAGMIND_MIN_SCORE",
     "rewrite_followups": "RAGMIND_REWRITE",
     "grade_chunks": "RAGMIND_GRADE",
+    "keyword_search": "RAGMIND_KEYWORDS",
     "timeout": "RAGMIND_TIMEOUT",
 }
 
@@ -35,6 +36,7 @@ class Settings:
     history_turns: int = 4            # most recent Q&A turns offered to the model
     rewrite_followups: bool = True    # rewrite "what about the second one?" before searching
     grade_chunks: bool = False        # ask the model to filter passages (slower)
+    keyword_search: bool = True       # combine similarity search with keyword (BM25) search
     timeout: float = 600.0            # seconds to wait for Ollama (first token can be slow)
 
 

@@ -5,6 +5,14 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.4.0] - 2026-11-26
+
+### Added
+- Hybrid search: similarity search is combined with keyword (BM25) search, so passages containing the question's exact terms ("label 3", "UDP 646", "Adj-SID") are found even when a passage from a neighbouring chapter or book is more similar in topic. Turn it off with `RAGMIND_KEYWORDS=0`. No re-indexing needed.
+
+### Fixed
+- Summaries of collections that include books described the books by their first pages (copyright, contents, companion-website and offer pages). Long documents without an abstract are now treated as books: no "abstract" or "conclusion" passages are taken from them, and publisher pages are skipped.
+
 ## [2.3.1] - 2026-11-26
 
 ### Fixed

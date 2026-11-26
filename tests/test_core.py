@@ -753,6 +753,66 @@ def test_that_counts_only_when_it_points_back():
         assert not pipeline.looks_like_followup(q), q
 
 
+# ── hybrid search, books ──────────────────────────────────────────────────────
+
+def test_keyword_index_needs_distinctive_words():
+    from ragmind.keyword import KeywordIndex, tokens
+    assert "ti-lfa" in tokens("What does TI-LFA do?") and "lfa" in tokens("TI-LFA")
+    texts = [f"General routing text number {i} about networks." for i in range(40)]
+    texts += ["Labels 0 to 15 are reserved; label 3 is implicit null.",
+              "The book covers TI-LFA and classic LFA fast reroute."]
+    ki = KeywordIndex(texts)
+    assert ki.search("Which label values are reserved, and what is label 3?", 3)[0][0] == 40
+    assert ki.search("How does TI-LFA compare with LFA?", 3)[0][0] == 41
+    assert ki.search("What is the capital of France?", 3) == []
+    assert ki.search("routing networks", 3) == []          # only common words: no keyword hits
+    assert ki.search("reserved labels", 3, allowed={41}) == []
+
+
+def test_fusion_keeps_keyword_hits_and_drops_weak_similarity_only_ones():
+    sim = [{"text": "close topic", "score": 0.6}, {"text": "weak", "score": 0.1},
+           {"text": "both", "score": 0.5}]
+    kw = [{"text": "exact terms", "score": None}, {"text": "both", "score": None}]
+    out = [c["text"] for c in pipeline.fuse(sim, kw, 3, 0.25)]
+    assert out[0] == "both" and set(out) == {"both", "close topic", "exact terms"}
+
+
+def test_prepare_uses_keyword_search_when_the_corpus_has_it(ollama):
+    corpus = FakeCorpus({"a.pdf": ["Something about routing."] * 3 +
+                                  ["Labels 0 to 15 are reserved; label 3 is implicit null."]})
+    corpus.keyword_search = lambda q, n: [dict(corpus.chunk_range("a.pdf", 3, 4)[0], key="a.pdf")]
+    similar = lambda v, n: [dict(corpus.chunk_range("a.pdf", 0, 1)[0], key="a.pdf", score=0.9)]
+    client = OllamaClient(ollama.url)
+    p = pipeline.prepare(client, Settings(), "llama3", "What is label 3?", [], similar, corpus=corpus)
+    assert any("implicit null" in c["text"] for c in p.chunks)
+    p = pipeline.prepare(client, Settings(keyword_search=False), "llama3", "What is label 3?", [],
+                         similar, corpus=corpus)
+    assert not any("implicit null" in c["text"] for c in p.chunks)
+
+
+def book():
+    front = ["Cover. Copyright 2024 Pearson. ISBN 978-0-00. All rights reserved.",
+             "Register your book to access the companion website, practice test software and "
+             "the study planner. Use the access code inside.",
+             "Contents Chapter 1 MPLS Chapter 2 Segment Routing"]
+    body = [f"Chapter text {i}: MPLS forwarding and label distribution explained." for i in range(300)]
+    tail = ["Summary and Conclusions of the exam guide.", "Index A ABR B BGP"]
+    return front + body + tail
+
+
+def test_books_get_no_abstract_and_publisher_pages_are_skipped(ollama):
+    corpus = FakeCorpus({"guide.pdf": book(), "notes.txt": ["Short notes on LDP timers.", "More notes."]})
+    lay = pipeline.doc_layout(corpus, "guide.pdf")
+    assert lay["book"] and lay["abstract"] == [] and lay["conclusion"] == []
+    short = pipeline.doc_layout(corpus, "notes.txt")
+    assert not short["book"] and short["abstract"][0]["text"] == "Short notes on LDP timers."
+    assert pipeline.is_boilerplate(book()[1])
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3", "Summarise the key findings", [],
+                         lambda v, n: [], corpus=corpus)
+    texts = " ".join(c["text"] for c in p.chunks)
+    assert "companion website" not in texts and "Short notes" in texts
+
+
 def test_rewrite_keeps_descriptions_unnamed(ollama):
     history = [{"q": "Which model performed best?", "a": "Model B on dataset X [1]."}]
     client = OllamaClient(ollama.url)
