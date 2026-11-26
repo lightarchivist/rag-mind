@@ -203,25 +203,27 @@ def select(results: list[dict], top_k: int, min_score: float) -> list[dict]:
     return [r for r in ranked if r["score"] >= min_score][:top_k]
 
 
-RRF_K = 60              # reciprocal rank fusion constant (the usual value)
+MAX_KEYWORD_ONLY = 2    # passages that keyword search may add to the similarity results
 
 
 def fuse(similar: list[dict], keyword: list[dict], top_k: int, min_score: float) -> list[dict]:
-    """Merge similarity and keyword rankings (reciprocal rank fusion). A passage
-    found only by similarity must still reach `min_score`; one that contains the
-    question's distinctive words is kept either way."""
-    entries: dict = {}
-    ranked = sorted(similar, key=lambda r: r["score"], reverse=True)
-    for rank, r in enumerate(ranked):
-        e = entries.setdefault(r["text"], {"chunk": r, "rrf": 0.0, "keep": False})
-        e["rrf"] += 1 / (RRF_K + rank + 1)
-        e["keep"] = e["keep"] or r["score"] >= min_score
-    for rank, r in enumerate(keyword):
-        e = entries.setdefault(r["text"], {"chunk": r, "rrf": 0.0, "keep": True})
-        e["rrf"] += 1 / (RRF_K + rank + 1)
-        e["keep"] = True
-    best = sorted((e for e in entries.values() if e["keep"]), key=lambda e: -e["rrf"])
-    return [e["chunk"] for e in best[:top_k]]
+    """Combine similarity and keyword results. Similarity results stay the basis:
+    passages found by both searches come first, then the best similarity-only
+    ones, and keyword search adds at most MAX_KEYWORD_ONLY passages that the
+    similarity search missed (more only if similarity found too few)."""
+    ranked = [r for r in sorted(similar, key=lambda r: r["score"], reverse=True)
+              if r["score"] >= min_score]
+    found = {r["text"] for r in ranked}
+    words = {r["text"] for r in keyword}
+    both = [r for r in ranked if r["text"] in words]
+    similar_only = [r for r in ranked if r["text"] not in words]
+    keyword_only = [r for r in keyword if r["text"] not in found]
+    chosen = both[:top_k]
+    room = top_k - len(chosen)
+    extra = min(MAX_KEYWORD_ONLY, len(keyword_only), room)
+    chosen += similar_only[:room - extra]
+    chosen += keyword_only[:top_k - len(chosen)]
+    return chosen
 
 
 @dataclass

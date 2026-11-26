@@ -777,6 +777,32 @@ def test_fusion_keeps_keyword_hits_and_drops_weak_similarity_only_ones():
     assert out[0] == "both" and set(out) == {"both", "close topic", "exact terms"}
 
 
+def test_phrases_count_and_one_rare_word_is_not_enough():
+    from ragmind.keyword import KeywordIndex, query_groups
+    assert {"label 3"} in query_groups("What is label 3 used for?")
+    texts = [f"MPLS label distribution text {i}." for i in range(60)]
+    texts += ["Copyright 2024. All rights reserved.",                        # 60
+              "Reserved Instances lower the cost of EC2.",                   # 61
+              "Labels 0-15 are reserved; label 3 is implicit null (PHP)."]   # 62
+    ki = KeywordIndex(texts)
+    hits = [i for i, _ in ki.search("Which MPLS label values are reserved, and what is label 3 used for?", 5)]
+    assert hits == [62]                       # "reserved" alone doesn't bring in 60 or 61
+    assert ki.search("Is anything reserved?", 5) == []
+
+
+def test_keyword_hits_add_to_similarity_results_but_never_push_out_the_best():
+    sim = [{"text": f"similar {i}", "score": 0.9 - i / 100} for i in range(12)]
+    sim.append({"text": "table 15-2", "score": 0.84})          # similarity rank 7 of 13
+    kw = [{"text": f"keyword {i}", "score": None} for i in range(5)] + [{"text": "similar 1", "score": None}]
+    out = [c["text"] for c in pipeline.fuse(sim, kw, 6, 0.25)]
+    assert out[0] == "similar 1"                               # found by both: first
+    assert out[1:4] == ["similar 0", "similar 2", "similar 3"]  # best similarity results kept
+    assert out[4:] == ["keyword 0", "keyword 1"]               # at most two keyword-only additions
+    few = [{"text": "only one", "score": 0.5}, {"text": "too weak", "score": 0.1}]
+    out = [c["text"] for c in pipeline.fuse(few, kw[:4], 6, 0.25)]
+    assert out == ["only one", "keyword 0", "keyword 1", "keyword 2", "keyword 3"]
+
+
 def test_prepare_uses_keyword_search_when_the_corpus_has_it(ollama):
     corpus = FakeCorpus({"a.pdf": ["Something about routing."] * 3 +
                                   ["Labels 0 to 15 are reserved; label 3 is implicit null."]})

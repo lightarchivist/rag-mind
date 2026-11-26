@@ -5,6 +5,12 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.4.1] - 2026-11-26
+
+### Fixed
+- Keyword search could push the right passage out: a single rare word in the question (such as "reserved") brought in unrelated passages ("All rights reserved", "Reserved Instances") that took the place of good similarity results. Keyword search now only adds to the similarity results (at most two passages they missed), and a passage must match at least two distinctive words or phrases of the question.
+- Two-word phrases such as "label 3", "UDP 646" or "type 2" are now searched as phrases.
+
 ## [2.4.0] - 2026-11-26
 
 ### Added
