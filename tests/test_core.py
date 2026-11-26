@@ -618,6 +618,91 @@ def test_merge_overlapping_chunks():
     assert pipeline.merge_overlapping("abc", "xyz") == "abc xyz"
 
 
+# ── passage context: tables, lead-in, title page ──────────────────────────────
+
+def tables_paper(captions_above=True):
+    cert = "Qwen 4B 71.20% 64.10% 85.30% 73.20% 38.40% Llama 8B 90.10% 84.50% 100% 91.60% 17.20%"
+    swat = "Qwen 4B 75.40% 14.80% 70.20% 24.40% 20.90% Llama 8B 95.80% 55.30% 100% 71.20% 3.40%"
+    t3, t4 = "Table 3 Performance on the CERT dataset. Best in bold.", "Table 4 Performance on the SWaT dataset."
+    if captions_above:
+        return ["Results are summarised as shown in Table 3 below.", t3, "Model Acc Prec Rec F1 FPR",
+                cert + " " + t4, swat, "The discussion of these results follows."]
+    return ["Results are summarised as shown in Table 3 below.", "Model Acc Prec Rec F1 FPR",
+            cert, t3 + " Model Acc Prec Rec F1 FPR " + swat, t4, "The discussion follows."]
+
+
+def test_table_rows_are_labelled_with_their_own_caption():
+    corpus = FakeCorpus({"a.pdf": tables_paper()})
+    assert pipeline.caption_placement(corpus, "a.pdf") == "above"
+    passage = dict(corpus.chunk_range("a.pdf", 3, 4)[0], key="a.pdf")
+    [out] = pipeline.label_tables(corpus, pipeline.with_following_text(corpus, [passage]))
+    assert out["text"].startswith("[The table rows in this passage before any new caption are from "
+                                  "Table 3: Performance on the CERT dataset.]")
+    assert "17.20%\n\nTable 4 Performance on the SWaT dataset." in out["text"]
+    # "as shown in Table 3 below" is a reference, not a caption
+    assert [t for _, t in pipeline.captions(" ".join(tables_paper()))] == [
+        "Table 3: Performance on the CERT dataset.", "Table 4: Performance on the SWaT dataset."]
+    # Plain text is left alone.
+    prose = dict(corpus.chunk_range("a.pdf", 5, 6)[0], key="a.pdf")
+    assert pipeline.label_tables(corpus, [prose])[0]["text"] == "The discussion of these results follows."
+
+
+def test_captions_below_tables_label_rows_with_the_next_caption():
+    corpus = FakeCorpus({"b.pdf": tables_paper(captions_above=False)})
+    assert pipeline.caption_placement(corpus, "b.pdf") == "below"
+    passage = dict(corpus.chunk_range("b.pdf", 2, 3)[0], key="b.pdf")
+    [out] = pipeline.label_tables(corpus, [passage])
+    assert "are from Table 3: Performance on the CERT dataset.]" in out["text"]
+
+
+def test_lead_in_keeps_who_did_the_work(ollama):
+    prev = ("Background on TSN. For instance, in Ref. [12], the authors study queues in TSN devices. "
+            "The authors have proved the queue scheduling")
+    cur = "proved the queue scheduling is NP-hard. By formulating it with SMT they propose two heuristics."
+    assert pipeline.lead_in(prev, cur) == ("For instance, in Ref. [12], the authors study queues in TSN "
+                                           "devices. The authors have")
+    assert pipeline.lead_in("Short.", "Next sentence.") == "Short."
+    corpus = FakeCorpus({"s.pdf": ["Title page of s.", prev, cur]})
+    hits = lambda v, n: [{"text": cur, "source": "s.pdf", "page": 3, "score": 0.9, "key": "s.pdf",
+                          "chunk_id": 2}]
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3",
+                         "How is TSN scheduling improved?", [], hits, corpus=corpus)
+    assert p.chunks[0]["text"].startswith("For instance, in Ref. [12], the authors")
+
+
+def test_author_questions_include_the_title_page(ollama):
+    for q in ("Who are the authors of the SDN paper, and where are they based?",
+              "Who wrote the hierarchical paper?", "List the authors' affiliations"):
+        assert pipeline.asks_about_authors(q), q
+    for q in ("How do the authors improve scheduling?", "What do the authors conclude?"):
+        assert not pipeline.asks_about_authors(q), q
+    corpus = FakeCorpus({
+        "Hierarchical multi-agent AI framework.pdf": ["Hierarchical framework. A. Rossi, University of Turin.",
+                                                      "A B S T R A C T Agents.", "Method."],
+        "How AI-enabled SDN technologies improve IIoT.pdf": ["How AI-enabled SDN... L. Chen, Example University",
+                                                             "c Research Council, Cape Town, South Africa",
+                                                             "ABSTRACT SDN for IIoT.", "Body."]})
+    hits = lambda v, n: [{"text": "Body.", "source": "x", "page": 4, "score": 0.3,
+                          "key": "How AI-enabled SDN technologies improve IIoT.pdf", "chunk_id": 3}]
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3",
+                         "Who are the authors of the SDN paper, and where are they based?", [], hits,
+                         corpus=corpus)
+    texts = " ".join(c["text"] for c in p.chunks)
+    assert "Example University" in texts and "Cape Town" in texts and "Rossi" not in texts
+    assert p.chunks[0]["section"] == "title page"
+
+
+def test_citation_brackets_and_grouped_sources():
+    from ragmind.prompt import group_sources, tidy_citations
+    assert tidy_citations("accuracy【9】【11】") == "accuracy[9][11]"
+    chunks = [{"source": "a.pdf", "page": 1, "section": "abstract", "text": "x"},
+              {"source": "b.pdf", "page": 1, "section": "abstract", "text": "y"},
+              {"source": "a.pdf", "page": 1, "section": "abstract", "text": "z"},
+              {"source": "a.pdf", "page": 9, "section": "", "text": "w"}]
+    assert group_sources(chunks) == [([1, 3], "a.pdf, p. 1", "abstract"), ([2], "b.pdf, p. 1", "abstract"),
+                                     ([4], "a.pdf, p. 9", "")]
+
+
 def test_rewrite_gets_room_for_models_that_think(ollama):
     ollama.models.append({"name": "gpt-oss:20b", "family": "gptoss", "parameter_size": "20.9B",
                           "capabilities": ["completion", "thinking"], "context_length": 131072, "size": 1})

@@ -900,37 +900,52 @@ async function updateBadges() {
 function hideWelcome() { const w = document.getElementById('welcome'); if (w) w.remove(); }
 
 // Numbered source tags, in the same order as the passages the model saw, so
-// "[2]" in an answer is tag [2]. Clicking a tag shows that passage's text.
+// "[2]" in an answer is in tag [2]. Passages from the same document, page and
+// section share one tag ("[1, 3, 5]"). Clicking a tag shows the passages' text.
 function renderSources(div, header) {
   const passages = (header && header.passages) || [];
   const cites = passages.length ? passages.map(p => p.cite) : ((header && header.sources) || []);
   div.innerHTML = '';
+  const groups = [], byKey = {};
   cites.forEach((cite, i) => {
+    const section = (passages[i] && passages[i].section) || '';
+    const key = cite + '\u0000' + section;
+    if (!byKey[key]) { byKey[key] = {cite, section, numbers: [], items: []}; groups.push(byKey[key]); }
+    byKey[key].numbers.push(i + 1);
+    if (passages[i]) byKey[key].items.push({n: i + 1, passage: passages[i]});
+  });
+  groups.forEach((g, gi) => {
     const tag = document.createElement('span');
     tag.className = 'source-tag';
-    tag.innerHTML = `<b>[${i + 1}]</b> ${esc(cite)}`;
-    if (passages[i]) {
-      tag.title = 'Show this passage';
-      tag.onclick = () => togglePassage(div, tag, i + 1, passages[i]);
+    tag.innerHTML = `<b>[${g.numbers.join(', ')}]</b> ${esc(g.cite)}${g.section ? ' · ' + esc(g.section) : ''}`;
+    if (g.items.length) {
+      tag.title = g.items.length > 1 ? 'Show these passages' : 'Show this passage';
+      tag.onclick = () => togglePassage(div, tag, gi, g.items);
     }
     div.appendChild(tag);
   });
 }
 
-function togglePassage(div, tag, n, passage) {
+function togglePassage(div, tag, id, items) {
   const open = div.querySelector('.source-passage');
-  const wasThis = open && open.dataset.n === String(n);
+  const wasThis = open && open.dataset.id === String(id);
   if (open) open.remove();
   div.querySelectorAll('.source-tag.open').forEach(t => t.classList.remove('open'));
   if (wasThis) return;
   const box = document.createElement('div');
   box.className = 'source-passage';
-  box.dataset.n = String(n);
-  const head = document.createElement('div');
-  head.className = 'src-head';
-  head.textContent = `[${n}] ${passage.cite}${passage.section ? ' · ' + passage.section : ''}`;
-  box.appendChild(head);
-  box.appendChild(document.createTextNode(passage.text));
+  box.dataset.id = String(id);
+  items.forEach(({n, passage}, k) => {
+    const head = document.createElement('div');
+    head.className = 'src-head';
+    if (k) head.style.marginTop = '10px';
+    head.textContent = `[${n}] ${passage.cite}${passage.section ? ' · ' + passage.section : ''}`;
+    box.appendChild(head);
+    const body = document.createElement('div');
+    body.className = 'src-text';
+    body.textContent = passage.text;
+    box.appendChild(body);
+  });
   div.appendChild(box);
   tag.classList.add('open');
 }

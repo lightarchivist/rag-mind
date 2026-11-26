@@ -27,7 +27,7 @@ from ragmind.config import Settings, load_settings
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
 from ragmind.numpy_index import NumpyIndex
 from ragmind.ollama import ModelNotFound, NotAChatModel, OllamaClient, OllamaError, short
-from ragmind.prompt import cite
+from ragmind.prompt import cite, tidy_citations
 
 DATA_DIR   = os.getenv("DATA_DIR", "/data")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
@@ -382,7 +382,7 @@ def chat_stream(req: ChatRequest):
         try:
             tokens = ollama.generate_stream(model.name, prepared.prompt,
                                             pipeline.generation_options(prepared.num_ctx))
-            yield from thinking.visible(tokens, hold=hold)
+            yield from map(tidy_citations, thinking.visible(tokens, hold=hold))
         except OllamaError as e:
             yield f"\n[ERROR: {e}]"
 

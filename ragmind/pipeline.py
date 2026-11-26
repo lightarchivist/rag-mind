@@ -6,6 +6,7 @@ Each result dict has: text, source, page (or None), score (cosine similarity).
 """
 
 import math
+import os
 import re
 from dataclasses import dataclass
 from typing import Callable
@@ -361,12 +362,18 @@ def broad_chunks(corpus, vector, settings: Settings, keys: list[str]) -> list[di
     return interleaved
 
 
-def merge_overlapping(first: str, second: str) -> str:
-    """Join two consecutive chunks, dropping the text they share (chunks overlap)."""
+def _overlap(first: str, second: str) -> int:
+    """How many characters at the start of `second` repeat the end of `first`."""
     for k in range(min(len(second), 300), 15, -1):
         if first.endswith(second[:k]):
-            return first + second[k:]
-    return first + " " + second
+            return k
+    return 0
+
+
+def merge_overlapping(first: str, second: str) -> str:
+    """Join two consecutive chunks, dropping the text they share (chunks overlap)."""
+    k = _overlap(first, second)
+    return first + second[k:] if k else first + " " + second
 
 
 def with_following_text(corpus, chunks: list[dict]) -> list[dict]:
@@ -383,6 +390,192 @@ def with_following_text(corpus, chunks: list[dict]) -> list[dict]:
                     and not in_back_matter(doc_layout(corpus, key), cid + 1, include_appendix=False):
                 c = dict(c, text=merge_overlapping(c["text"], nxt[0]["text"]))
         out.append(c)
+    return out
+
+
+# ── context a passage needs to be read correctly ──────────────────────────────
+
+MAX_LEAD = 350          # characters of the preceding text put before a passage
+# Abbreviations whose full stop does not end a sentence ("in Ref. [12], the authors…").
+_ABBREVIATIONS = {"ref", "refs", "fig", "figs", "eq", "eqs", "sec", "tab", "no", "vol", "pp",
+                  "al", "e.g", "i.e", "cf", "vs", "etc", "approx", "resp", "dr", "prof", "st"}
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]?\s+(?=[\"'(]?[A-Z0-9])")
+
+
+def _sentence_starts(text: str) -> list[int]:
+    starts = []
+    for m in _SENTENCE_END.finditer(text):
+        word = re.search(r"([\w.]+)[.!?][\"')\]]?$", text[:m.start() + 1])
+        if word and word.group(1).lower().rstrip(".") in _ABBREVIATIONS:
+            continue
+        starts.append(m.end())
+    return starts
+
+
+def lead_in(previous: str, passage: str) -> str:
+    """The sentence or two before a passage, so that "the authors" or "this method"
+    at its start can be read correctly ("For instance, in Ref. [12], the authors…")."""
+    before = previous[:len(previous) - _overlap(previous, passage)].rstrip()
+    if not before:
+        return ""
+    window = before[-MAX_LEAD:]
+    starts = [i for i in _sentence_starts(window) if i < len(window)]
+    if starts:
+        return window[starts[0]:].strip()
+    if len(before) <= MAX_LEAD:
+        return before.strip()
+    cut = window.find(" ")
+    return "…" + window[cut + 1:].strip() if cut >= 0 else ""
+
+
+def with_preceding_text(corpus, chunks: list[dict]) -> list[dict]:
+    """Put the end of the previous chunk before each passage."""
+    texts = {c["text"] for c in chunks}
+    out = []
+    for c in chunks:
+        key, cid = c.get("key"), c.get("chunk_id")
+        if key is not None and cid:
+            prev = corpus.chunk_range(key, cid - 1, cid)
+            if prev and prev[0]["text"] not in texts and not is_boilerplate(prev[0]["text"]) \
+                    and not is_front_matter(prev[0]["text"]):
+                lead = lead_in(prev[0]["text"], c["text"])
+                if lead:
+                    c = dict(c, text=lead + " " + c["text"], lead=lead)
+        out.append(c)
+    return out
+
+
+# Table captions. In extracted PDF text a table's rows run straight into the next
+# table's caption, so a passage that ends one table and starts another reads as
+# if the first table's numbers belonged to the second (Table 3's rows read as
+# part of Table 4). Each such passage is labelled with its own table.
+_CAPTION = re.compile(r"(?<![^\s.])(Table|TABLE)\s+(\d+|[IVX]+)\s*[.:]?\s+(?=[A-Z])")
+_NOT_CAPTION_AFTER = {"in", "see", "of", "and", "to", "from", "with", "by", "per", "as", "on",
+                      "under", "shown", "listed", "reported", "summarized", "summarised", "given",
+                      "following", "next", "previous", "this", "that", "the"}
+_NUMBER = re.compile(r"^[(\[]?[-+±]?\d+(?:[.,]\d+)*%?[)\]]?[,;]?$")
+TABLE_SCAN = 8          # chunks searched for the caption of the table a passage starts in
+_PLACEMENTS: dict = {}
+
+
+def captions(text: str) -> list[tuple[int, str]]:
+    """(position, "Table 3: Performance comparison on …") for each table caption."""
+    out = []
+    for m in _CAPTION.finditer(text):
+        word = re.search(r"(\w+)\W*$", text[:m.start()])
+        if word and word.group(1).lower() in _NOT_CAPTION_AFTER:
+            continue
+        rest = text[m.end():m.end() + 200]
+        title = re.match(r"(.{3,160}?[.!?])(?=\s|$)", rest)
+        title = title.group(1) if title else rest[:120].rstrip() + "…"
+        out.append((m.start(), f"{m.group(1).title()} {m.group(2)}: {title}"))
+    return out
+
+
+def has_table_rows(text: str, need: int = 6, window: int = 12) -> bool:
+    """Does the text contain table rows (a stretch dense with numbers)?"""
+    flags = [bool(_NUMBER.match(t)) for t in text.split()]
+    return any(sum(flags[i:i + window]) >= need for i in range(max(1, len(flags) - window + 1)))
+
+
+def caption_placement(corpus, key) -> str:
+    """'above' or 'below': where this document prints table captions. Most journals
+    put them above; a document votes the other way only on clear evidence."""
+    n = corpus.chunk_count(key)
+    if n <= 0:
+        return "above"
+    first = corpus.chunk_range(key, 0, 1)
+    cache_key = (key, n, first[0]["text"][:80] if first else "")
+    if cache_key not in _PLACEMENTS:
+        text = " ".join(c["text"] for c in corpus.chunk_range(key, 0, min(n, 4000)))
+        above = below = 0
+        for pos, _ in captions(text):
+            rows_before = has_table_rows(text[max(0, pos - 300):pos])
+            rows_after = has_table_rows(text[pos:pos + 900])
+            above += rows_after and not rows_before
+            below += rows_before and not rows_after
+        _PLACEMENTS[cache_key] = "below" if below > above else "above"
+    return _PLACEMENTS[cache_key]
+
+
+def label_tables(corpus, chunks: list[dict]) -> list[dict]:
+    """Name the table a passage's leading rows belong to, and start every table
+    caption inside a passage on a new paragraph."""
+    out = []
+    for c in chunks:
+        key, cid, text = c.get("key"), c.get("chunk_id"), c["text"]
+        caps = captions(text)
+        lead_end = caps[0][0] if caps else len(text)
+        # Rows before the first caption in the passage belong to a table that started earlier.
+        if key is not None and cid is not None and has_table_rows(text[:lead_end]):
+            if caption_placement(corpus, key) == "above":
+                before = " ".join(b["text"] for b in
+                                  corpus.chunk_range(key, max(0, cid - TABLE_SCAN), cid))
+                if c.get("lead"):               # the lead-in is part of the passage, not before it
+                    at = before.rfind(c["lead"].lstrip("…")[:60])
+                    before = before[:at] if at >= 0 else before
+                found = captions(before)
+                owner = found[-1][1] if found else ""
+            else:
+                after = corpus.chunk_range(key, cid + 1, cid + 1 + TABLE_SCAN)
+                found = caps or captions(" ".join(a["text"] for a in after))
+                owner = found[0][1] if found else ""
+            if owner:
+                c = dict(c, table=owner)
+                text = f"[The table rows in this passage before any new caption are from {owner}]\n" + text
+                caps = [(p + len(text) - len(c["text"]), t) for p, t in caps]
+        for pos, _ in reversed(caps):
+            if pos > 0:
+                text = text[:pos].rstrip() + "\n\n" + text[pos:]
+        out.append(dict(c, text=text))
+    return out
+
+
+# Questions about who wrote a document: names and affiliations are on the title
+# page, which a similarity search rarely finds ("who are the authors?" does not
+# resemble a list of names and addresses).
+_ASKS_ABOUT_AUTHORS = [
+    re.compile(r"\bwho\b[^?]*\b(authors?|wrote|written|writers?|authored|researchers)\b", re.I),
+    re.compile(r"\b(authors?|writers?|researchers)\b[^?]*\b(names?|based|located|affiliat\w*|"
+               r"universit\w*|institutions?|countr\w*|organi[sz]ations?)\b", re.I),
+    re.compile(r"\b(affiliations?|written by|authored by)\b", re.I),
+    re.compile(r"\bwho (wrote|authored|is behind|published)\b", re.I),
+]
+_NOT_A_NAME = {"the", "and", "who", "are", "where", "what", "which", "they", "their", "based",
+               "wrote", "written", "author", "authors", "paper", "papers", "document", "documents",
+               "file", "pdf", "article", "study", "report", "book", "from", "this", "that",
+               "with", "about", "affiliation", "affiliations", "located", "names", "name", "were",
+               "was", "for", "how", "does", "did", "list", "give", "tell"}
+TITLE_PAGE = 3          # chunks taken from the start of a document for author questions
+
+
+def asks_about_authors(question: str) -> bool:
+    return any(p.search(question) for p in _ASKS_ABOUT_AUTHORS)
+
+
+def named_documents(question: str, keys: list[str], results: list[dict]) -> list[str]:
+    """The documents a question refers to ("the SDN paper"), by words in their
+    file names; otherwise those the search found, or all when there are few."""
+    words = {w for w in re.findall(r"[a-z0-9]+", question.lower())
+             if len(w) >= 3 and w not in _NOT_A_NAME}
+    scores = {k: len(words & set(re.findall(r"[a-z0-9]+", os.path.basename(k).lower())))
+              for k in keys}
+    best = max(scores.values(), default=0)
+    if best > 0:
+        return [k for k in keys if scores[k] == best]
+    if len(keys) <= 3:
+        return list(keys)
+    return list(dict.fromkeys(r["key"] for r in results if r.get("key") in scores))[:2]
+
+
+def title_page_chunks(corpus, key) -> list[dict]:
+    """The first chunks of a document, up to its abstract."""
+    head = corpus.chunk_range(key, 0, min(TITLE_PAGE, corpus.chunk_count(key)))
+    out = []
+    for i, ch in enumerate(head):
+        if i > 0 and _ABSTRACT.search(ch["text"]) and not is_front_matter(ch["text"]):
+            break
+        out.append(dict(ch, key=key, section="title page"))
     return out
 
 
@@ -430,8 +623,13 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
         results = [r for r in results if r.get("key") is None or not in_back_matter(
             doc_layout(corpus, r["key"]), r.get("chunk_id"), include_appendix=False)]
     chunks = select(results, settings.top_k, settings.min_score)
+    if corpus is not None and (asks_about_authors(question) or asks_about_authors(search_query)):
+        front = [ch for key in named_documents(question + " " + search_query, corpus.keys(), results)
+                 for ch in title_page_chunks(corpus, key)]
+        seen = {ch["text"] for ch in front}
+        chunks = front + [ch for ch in chunks if ch["text"] not in seen]
     if corpus is not None:
-        chunks = with_following_text(corpus, chunks)
+        chunks = label_tables(corpus, with_preceding_text(corpus, with_following_text(corpus, chunks)))
     if settings.grade_chunks and chunks:
         chunks = grade_chunks(client, model, search_query, chunks, num_ctx)
     text, used, turns = P.build_prompt(question, chunks, history, num_ctx,

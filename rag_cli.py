@@ -46,7 +46,7 @@ from ragmind.config import ENV, Settings, default_config_path, load_settings, sa
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
 from ragmind.ollama import (ModelInfo, ModelNotFound, NotAChatModel, OllamaClient,
                             OllamaError, OllamaUnavailable, short)
-from ragmind.prompt import cite
+from ragmind.prompt import cite, group_sources, tidy_citations
 
 # ─── Colours ──────────────────────────────────────────────────────────────────
 RESET = "\033[0m"; BOLD = "\033[1m"; CYAN = "\033[96m"
@@ -512,9 +512,9 @@ def answer_question(store, ollama, settings, model: ModelInfo, question, history
         print(c(DIM, f"  (question about the documents as a whole: passages from all {docs})"))
     if prepared.chunks:
         # Numbered like the passages the model saw, so "[2]" in an answer is source 2.
-        for i, ch in enumerate(prepared.chunks, 1):
-            section = f" ({ch['section']})" if ch.get("section") else ""
-            print(c(DIM, f"  [{i}] {cite(ch)}{section}"))
+        for numbers, where, section in group_sources(prepared.chunks):
+            section = f" ({section})" if section else ""
+            print(c(DIM, f"  [{', '.join(map(str, numbers))}] {where}{section}"))
     else:
         print(c(DIM, "  No passages matched closely; the model will say if it can't answer."))
 
@@ -526,7 +526,7 @@ def answer_question(store, ollama, settings, model: ModelInfo, question, history
     try:
         tokens = ollama.generate_stream(model.name, prepared.prompt,
                                         pipeline.generation_options(prepared.num_ctx))
-        for tok in thinking.visible(tokens, hold=hold):
+        for tok in map(tidy_citations, thinking.visible(tokens, hold=hold)):
             if hold and not parts:
                 print()                         # answer starts on the line below "(thinking…)"
             print(tok, end="", flush=True)

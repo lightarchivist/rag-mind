@@ -5,6 +5,17 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.2.1] - 2026-11-26
+
+### Fixed
+- Numbers from one table could be read as belonging to the next one when a passage ran across a table caption. Passages that continue a table now name that table.
+- Passages that start mid-sentence could lose who did the work, such as a reference to cited research. The sentence or two before a passage are now included.
+- "Who are the authors?" questions often found nothing. They now include the title page of the document named in the question.
+- Citations written as 【2】 are shown as [2].
+
+### Changed
+- Passages from the same document, page and section share one source tag, e.g. [1, 3, 5].
+
 ## [2.2.0] - 2026-11-26
 
 ### Added

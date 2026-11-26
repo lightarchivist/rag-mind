@@ -32,6 +32,23 @@ def cite(chunk: dict) -> str:
     return f"{chunk['source']}, p. {page}" if page else chunk["source"]
 
 
+# Some models (gpt-oss) cite as 【2】; shown as [2], like the source tags.
+_CITATION_BRACKETS = str.maketrans({"【": "[", "】": "]"})
+
+
+def tidy_citations(text: str) -> str:
+    return text.translate(_CITATION_BRACKETS)
+
+
+def group_sources(chunks: list[dict]) -> list[tuple[list[int], str, str]]:
+    """Passages from the same document, page and section share one entry:
+    ([1, 3, 5], "paper.pdf, p. 1", "abstract"), in order of first appearance."""
+    groups: dict = {}
+    for i, ch in enumerate(chunks, 1):
+        groups.setdefault((cite(ch), ch.get("section", "")), []).append(i)
+    return [(numbers, c, section) for (c, section), numbers in groups.items()]
+
+
 def format_passage(i: int, chunk: dict) -> str:
     # No similarity score here: models copied it into answers ("relevance: 0.78").
     section = f", {chunk['section']}" if chunk.get("section") else ""
