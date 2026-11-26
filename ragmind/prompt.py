@@ -15,7 +15,8 @@ Rules:
 5. When quoting numbers from a table, say which row and column (e.g. which model and dataset) they belong to, exactly as in the passage.
 6. Check the question's assumptions. If it attributes something to a document whose passages do not say it (for example, the passages come from a different document), say so instead of answering as if it were true.
 7. Keep the authors' own work apart from work they cite: "Ref. [89] proposes X" means other researchers proposed X.
-8. The conversation so far is context for follow-up questions, not a source of facts."""
+8. The conversation so far is context for follow-up questions, not a source of facts.
+9. When asked how many there are and the passages give no total, list the ones the passages name and count them, saying that this is how many the passages mention."""
 
 NO_PASSAGES = "(No passages matched this question.)"
 MAX_ANSWER_CHARS = 1500        # earlier answers are shortened to this in the prompt

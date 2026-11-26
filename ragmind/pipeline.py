@@ -105,7 +105,8 @@ _MORE = re.compile(r"\b(elaborate|expand on|more detail|in detail|explain furthe
 
 # A pronoun in a second clause can point back at the first clause of the same
 # question: "What are the three signals in the framework, and how are they combined?"
-_CLAUSE_BREAK = re.compile(r"[,;]|\b(?:and|or|but)\b", re.I)
+# "…, and how are they combined?", "…route types in EVPN what they do"
+_CLAUSE_BREAK = re.compile(r"[,;]|\b(?:and|or|but|what|how|why|which|where|when|who)\b", re.I)
 _PRONOUN = re.compile(r"^(it|its|it's|they|them|their|this|these|those|he|she|his|her)$", re.I)
 MIN_FIRST_CLAUSE = 5    # words a first clause needs before a later pronoun can refer to it
 
@@ -118,7 +119,7 @@ def _refers_within(text: str, match) -> bool:
     breaks = list(_CLAUSE_BREAK.finditer(text, 0, match.start()))
     if not breaks:
         return False
-    first = text[:breaks[0].start()]
+    first = text[:breaks[-1].start()]
     return len(first.split()) >= MIN_FIRST_CLAUSE and not _FOLLOWUP_WORDS.search(first)
 
 

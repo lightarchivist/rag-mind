@@ -247,3 +247,19 @@ def test_short_questions_in_a_one_document_chat_are_not_followups(ollama):
                          "What are the main limitations?", history, lambda v, n: corpus.search(v, n),
                          corpus=corpus)
     assert p.search_query == "What are the main limitations?" and p.history_used == 0
+
+
+def test_a_pronoun_after_a_question_word_can_refer_within_the_question():
+    assert not pipeline.looks_like_followup("tell me about route types in EVPN what they do etc...")
+    assert pipeline.looks_like_followup("what do they do?")
+    assert pipeline.looks_like_followup("Tell me more about how it works")
+
+
+def test_conversational_words_are_not_keywords():
+    from ragmind.keyword import query_groups
+    assert query_groups("I would like to understand RAG, please help") == [{"rag"}]
+
+
+def test_how_many_questions_count_what_the_passages_name():
+    prompt, _, _ = build_prompt("How many route types are there?", [], [], 8192)
+    assert "list the ones the passages name and count them" in prompt

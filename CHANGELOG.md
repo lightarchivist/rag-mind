@@ -5,6 +5,13 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.2] - 2026-11-26
+
+### Fixed
+- "How many … are there?" was answered "not found" when the documents list the items without giving a total. The answer now lists the ones the passages name and counts them.
+- A question such as "Tell me about route types in EVPN what they do" was treated as a follow-up, because of "they", and rewritten from the previous answer. A pronoun after a question word that follows a complete first part now counts as pointing within the question.
+- Conversational words ("I would like to understand…", "please help") no longer count as keywords, so they don't bring in unrelated passages.
+
 ## [3.0.1] - 2026-11-26
 
 ### Fixed

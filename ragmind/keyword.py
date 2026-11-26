@@ -22,6 +22,7 @@ most my no nor not now of off on once only or other our out over own same she sh
 such than that the their them then there these they this those through to too under until up
 very was we were what when where which while who whom why will with would you your yours
 explain describe tell show give list please according book document documents paper papers
+like understand want need know help etc
 """.split())
 K1, B = 1.2, 0.75
 COMMON = 0.05           # a word in more than 5% of passages doesn't count as distinctive
