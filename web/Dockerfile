@@ -9,6 +9,7 @@ COPY web/requirements-web.txt .
 RUN pip install --no-cache-dir -r requirements-web.txt
 
 COPY ragmind/ ./ragmind/
+COPY CHANGELOG.md ./
 COPY web/app/ ./
 
 EXPOSE 8000

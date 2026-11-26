@@ -21,7 +21,7 @@ try:
 except ImportError:                       # running from a git checkout: use the repo copy
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from ragmind import pipeline, thinking
+from ragmind import __version__, changelog, pipeline, thinking
 from ragmind.chunking import chunk_pages
 from ragmind.config import Settings, load_settings
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
@@ -163,7 +163,8 @@ def rebuild_background():
 
 
 # ─── FastAPI ──────────────────────────────────────────────────────────────────
-app = FastAPI(title="RAG-MIND", version="2.0")
+app = FastAPI(title="RAG-MIND", version=__version__)
+CHANGELOG = changelog.find_changelog(os.path.dirname(__file__))
 
 
 class ChatRequest(BaseModel):
@@ -382,8 +383,14 @@ def chat_stream(req: ChatRequest):
 
 @app.get("/health")
 def health():
-    return {"ollama": ollama.ping(), "model": short(settings.llm_model),
+    return {"ollama": ollama.ping(), "model": short(settings.llm_model), "version": __version__,
             "needs_reindex": index_problem(), "rebuild": dict(rebuild_status)}
+
+
+@app.get("/version")
+def version():
+    """The running version and its release notes (from CHANGELOG.md), for the About box."""
+    return {"version": __version__, "release": changelog.latest(CHANGELOG)}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

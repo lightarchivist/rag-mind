@@ -40,7 +40,7 @@ import sys
 import textwrap
 import time
 
-from ragmind import pipeline, thinking
+from ragmind import __version__, pipeline, thinking
 from ragmind.chunking import chunk_pages
 from ragmind.config import ENV, Settings, default_config_path, load_settings, save_setting
 from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
@@ -485,7 +485,7 @@ BANNER = r"""
  |  _ < (_| | (_| | |  | | | | | | (_| |
  |_| \_\__,_|\__, |_|  |_|_|_| |_|\__,_|
              |___/
-  Universal Document Q&A  •  RAG + Ollama
+  Universal Document Q&A  •  RAG + Ollama  •  v{version}
 """
 
 HELP = """
@@ -546,7 +546,7 @@ def chat_repl(store: ChromaStore, ollama: OllamaClient, settings: Settings, mode
     model = choose_model(ollama, model_name)
     docs = store.documents()
 
-    print(c(CYAN, BANNER))
+    print(c(CYAN, BANNER.format(version=__version__)))
     print(c(BOLD, "  Indexed: ") + ", ".join(d["label"] for d in docs))
     print(c(BOLD, "  Chunks : ") + str(store.count()))
     print(c(BOLD, "  Model  : ") + short(model.name))
@@ -623,6 +623,7 @@ def build_parser() -> argparse.ArgumentParser:
               python rag_cli.py clear
         """),
     )
+    parser.add_argument("--version", action="version", version=f"RagMind {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
     p_folder = sub.add_parser("folder", help="Index all documents in a folder")

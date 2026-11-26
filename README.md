@@ -6,6 +6,11 @@ Ask natural language questions across PDFs, EPUBs, books, and documents using Ll
 
 [![Licence: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-lightarchivist%2Frag--mind-blue)](https://hub.docker.com/r/lightarchivist/rag-mind)
+[![Version](https://img.shields.io/badge/version-2.1.0-green)](CHANGELOG.md)
+
+**Version 2.1.0.** See [CHANGELOG.md](CHANGELOG.md) for what's new and what was fixed in each
+version. The web app shows the current version and its changes under **About**, and the CLI
+prints it with `python rag_cli.py --version`.
 
 ## Acknowledgements
 
@@ -122,9 +127,12 @@ rag-mind/
 │   ├── chunking.py         ← Overlapping, sentence-aware chunks
 │   ├── prompt.py           ← Prompt building within the model's context window
 │   ├── pipeline.py         ← Retrieval: follow-up rewriting, search, filtering, grading
-│   └── numpy_index.py      ← The web app's vector index
+│   ├── numpy_index.py      ← The web app's vector index
+│   ├── thinking.py         ← Hides reasoning models' thinking
+│   └── changelog.py        ← Reads CHANGELOG.md for the About box
 ├── rag_cli.py              ← CLI version (ChromaDB)
 ├── requirements.txt        ← CLI dependencies
+├── CHANGELOG.md            ← What changed in each version
 ├── start.sh                ← Startup script
 ├── tests/                  ← Offline tests (fake Ollama; no models needed)
 ├── web/                    ← Web app (Docker)
@@ -209,6 +217,32 @@ python -m pytest
 ```
 
 The tests use a fake Ollama server, so no models are needed.
+
+---
+
+## Releasing a new version
+
+1. Choose the number: **MAJOR** when users must act (e.g. rebuild the index),
+   **MINOR** for new features, **PATCH** for fixes only.
+2. Add an entry at the top of `CHANGELOG.md` (`## [x.y.z] - YYYY-MM-DD`, with
+   `### Added` / `### Changed` / `### Fixed` lists).
+3. Set the same number in `ragmind/__init__.py` (`__version__`) and in the version
+   badge at the top of this README. The tests check that the changelog and
+   `__version__` agree.
+4. Commit, tag and push:
+   ```bash
+   python -m pytest
+   git commit -am "Release x.y.z"
+   git tag vx.y.z
+   git push && git push --tags
+   ```
+5. Publish the Docker image under both the version and `latest`:
+   ```bash
+   docker build --network=host -f web/Dockerfile \
+     -t lightarchivist/rag-mind:x.y.z -t lightarchivist/rag-mind:latest .
+   docker push lightarchivist/rag-mind:x.y.z
+   docker push lightarchivist/rag-mind:latest
+   ```
 
 ---
 

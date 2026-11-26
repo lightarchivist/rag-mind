@@ -343,6 +343,17 @@
     border-radius: 8px; border: 1px solid var(--border); color: var(--text2);
     text-decoration: none; transition: border-color .15s, color .15s; }
   .modal-link:hover { border-color: var(--accent); color: var(--accent); }
+  .modal-version { font-family: var(--mono); font-size: 11px; color: var(--muted); margin: -10px 0 14px; }
+  .modal-news { max-height: 220px; overflow-y: auto; margin-bottom: 20px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface2); }
+  .modal-news:empty { display: none; }
+  .modal-news h4 { font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--text);
+    margin: 0 0 6px; text-transform: uppercase; letter-spacing: .05em; }
+  .modal-news h5 { font-family: var(--mono); font-size: 10px; font-weight: 600; color: var(--accent);
+    margin: 10px 0 2px; }
+  .modal-news p, .modal-news li { font-size: 12px; line-height: 1.5; color: var(--text2); }
+  .modal-news p { margin: 0 0 4px; }
+  .modal-news ul { margin: 0; padding-left: 18px; }
   .modal-close { float: right; background: none; border: none; font-size: 20px;
     color: var(--muted); cursor: pointer; margin-top: -8px; }
 
@@ -478,19 +489,22 @@
   <div class="modal" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="closeAbout()">✕</button>
     <div class="modal-title"><span style="color:var(--brand-rag)">Rag</span><span style="color:var(--muted)">-</span><span style="color:var(--accent)">Mind</span></div>
+    <div class="modal-version" id="about-version"></div>
     <div class="modal-body">
       RAG-MIND is a fully local, privacy-first document Q&A system. Users upload PDFs, EPUBs, and other documents, index them using a local embedding model, and ask natural language questions answered exclusively from document content — no cloud services, no API keys, no data leaving the machine.
     </div>
     <div class="modal-tags">
-      <span class="modal-tag">🦙 Llama 3</span>
+      <span class="modal-tag">🦙 Any Ollama model</span>
       <span class="modal-tag">🔍 nomic-embed-text</span>
       <span class="modal-tag">⚡ FastAPI</span>
       <span class="modal-tag">🐍 Python</span>
       <span class="modal-tag">🐳 Docker</span>
       <span class="modal-tag">🔒 100% Local</span>
     </div>
+    <div class="modal-news" id="about-news"></div>
     <div class="modal-links">
       <a class="modal-link" href="https://github.com/lightarchivist/rag-mind" target="_blank">📦 GitHub</a>
+      <a class="modal-link" href="https://github.com/lightarchivist/rag-mind/blob/main/CHANGELOG.md" target="_blank">📝 Changelog</a>
       <a class="modal-link" href="https://hub.docker.com/r/lightarchivist/rag-mind" target="_blank">🐳 Docker Hub</a>
       <a class="modal-link" href="https://www.gnu.org/licenses/gpl-3.0" target="_blank">⚖ GPL-3.0</a>
     </div>
@@ -524,8 +538,38 @@ setTheme(getTheme());
 requestAnimationFrame(() => document.documentElement.classList.add('theme-ready'));
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
+let aboutLoaded = false;
 function openAbout() {
   document.getElementById('about-overlay').classList.add('open');
+  if (!aboutLoaded) loadAbout();
+}
+
+// Version and "What's new" come from the server (CHANGELOG.md), so they always
+// describe the code that is actually running.
+async function loadAbout() {
+  try {
+    const d = await (await fetch('/version')).json();
+    const rel = d.release;
+    document.getElementById('about-version').textContent =
+      `Version ${d.version}` + (rel && rel.version === d.version && rel.date ? ` · ${rel.date}` : '');
+    const box = document.getElementById('about-news');
+    box.innerHTML = '';
+    if (rel && rel.version === d.version) {
+      const h = document.createElement('h4');
+      h.textContent = `What's new in ${rel.version}`;
+      box.appendChild(h);
+      if (rel.summary) { const p = document.createElement('p'); p.textContent = rel.summary; box.appendChild(p); }
+      rel.sections.forEach(sec => {
+        const t = document.createElement('h5'); t.textContent = sec.title; box.appendChild(t);
+        const ul = document.createElement('ul');
+        sec.items.forEach(item => { const li = document.createElement('li'); li.textContent = item; ul.appendChild(li); });
+        box.appendChild(ul);
+      });
+    }
+    aboutLoaded = true;
+  } catch (e) {
+    document.getElementById('about-version').textContent = '';
+  }
 }
 function closeAbout() {
   document.getElementById('about-overlay').classList.remove('open');
