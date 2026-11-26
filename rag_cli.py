@@ -561,6 +561,9 @@ def answer_question(store, ollama, settings, model: ModelInfo, question, history
     except KeyboardInterrupt:
         print(c(DIM, "\n  (stopped; not saved to the conversation)\n"))
         return None
+    if not "".join(parts).strip():
+        print(c(RED, f"\n  ERROR: {thinking.NO_ANSWER}\n  (Nothing was saved to the conversation.)\n"))
+        return None
     print(c(DIM, f"\n  [{time.time() - t0:.1f}s]\n"))
     return "".join(parts)
 

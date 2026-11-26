@@ -393,7 +393,7 @@ def chat_stream(req: ChatRequest):
         try:
             tokens = ollama.generate_stream(model.name, prepared.prompt,
                                             pipeline.generation_options(prepared.num_ctx))
-            yield from map(tidy_citations, thinking.visible(tokens, hold=hold))
+            yield from thinking.require_answer(map(tidy_citations, thinking.visible(tokens, hold=hold)))
         except OllamaError as e:
             yield f"\n[ERROR: {e}]"
 

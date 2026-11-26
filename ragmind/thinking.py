@@ -91,3 +91,18 @@ def strip(text: str) -> str:
     if CLOSE in text:
         return text.split(CLOSE, 1)[1].strip()
     return text.replace(OPEN, "").strip()
+
+
+NO_ANSWER = ("The model returned no answer. Reasoning models sometimes spend all their room on "
+             "thinking; try again, or ask a narrower question.")
+
+
+def require_answer(tokens: Iterable[str]) -> Iterator[str]:
+    """Pass the answer through; if it was empty, say so as an error instead of
+    leaving a blank reply (and keep the blank out of the conversation)."""
+    said = False
+    for tok in tokens:
+        said = said or bool(tok.strip())
+        yield tok
+    if not said:
+        yield f"[ERROR: {NO_ANSWER}]"

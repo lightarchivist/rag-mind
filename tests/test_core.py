@@ -103,6 +103,25 @@ def test_broken_s_font_is_repaired_and_watermarks_removed(tmp_path):
     assert report["repaired_s"] == 110 and report["watermarks"] == 10
 
 
+def test_ligatures_split_words_headings_and_download_stamps(tmp_path):
+    report = {}
+    text = ("T able 1.Comparative results. T o ensure efﬁciency the ﬂow was checked. V ery good. " * 4 +
+            "VIII. C ONCLUSION We conclude. Authorized licensed use limited to: Some University. "
+            "Downloaded on November 25,2026 at 15:06:24 UTC from IEEE Xplore. Restrictions apply. End.")
+    [(_, out)] = extract_pages(write(tmp_path / "paper.txt", text), report)
+    assert "Table 1.Comparative results. To ensure efficiency the flow was checked. Very good." in out
+    assert "VIII. CONCLUSION We conclude." in out
+    assert "Authorized" not in out and "University" not in out and out.endswith("End.")
+    assert report["ligatures"] == 8 and report["stamps"] == 1 and report["split_words"] == 13
+    assert [t for _, t in pipeline.captions(out)][0] == "Table 1: Comparative results."
+
+
+def test_split_capitals_are_joined_only_when_common(tmp_path):
+    text = "Antibodies bind T cells. Use a V shaped notch. " + "Normal text here. " * 20
+    [(_, out)] = extract_pages(write(tmp_path / "bio.txt", text))
+    assert out == text
+
+
 def test_real_minus_signs_are_left_alone(tmp_path):
     maths = "With n\u22121 links and x \u2212 y = 3, the cost is small. " * 30   # plenty of real "s"
     [(_, text)] = extract_pages(write(tmp_path / "paper.txt", maths), report := {})

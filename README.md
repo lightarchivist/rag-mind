@@ -6,9 +6,9 @@ Ask natural language questions across PDFs, EPUBs, books, and documents using Ll
 
 [![Licence: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-lightarchivist%2Frag--mind-blue)](https://hub.docker.com/r/lightarchivist/rag-mind)
-[![Version](https://img.shields.io/badge/version-2.4.2-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.4.3-green)](CHANGELOG.md)
 
-**Version 2.4.2.** See [CHANGELOG.md](CHANGELOG.md) for what's new and what was fixed in each
+**Version 2.4.3.** See [CHANGELOG.md](CHANGELOG.md) for what's new and what was fixed in each
 version. The web app shows the current version and its changes under **About**, and the CLI
 prints it with `python rag_cli.py --version`.
 

@@ -518,7 +518,7 @@ def with_preceding_text(corpus, chunks: list[dict]) -> list[dict]:
 # if the first table's numbers belonged to the second (Table 3's rows read as
 # part of Table 4). Each such passage is labelled with its own table.
 # "Table 4", "TABLE IV", and chapter-numbered "Table 5-3" / "Table 5.3" (books).
-_CAPTION = re.compile(r"(?<![^\s.])(Table|TABLE)\s+(\d+(?:[-–.]\d+)?|[IVX]+)\s*[.:]?\s+(?=[A-Z])")
+_CAPTION = re.compile(r"(?<![^\s.])(Table|TABLE)\s+(\d+(?:[-–.]\d+)?|[IVX]+)(?:\s*[.:]\s*|\s+)(?=[A-Z])")
 _NOT_CAPTION_AFTER = {"in", "see", "of", "and", "to", "from", "with", "by", "per", "as", "on",
                       "under", "shown", "listed", "reported", "summarized", "summarised", "given",
                       "following", "next", "previous", "this", "that", "the"}

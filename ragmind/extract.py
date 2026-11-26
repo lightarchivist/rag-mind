@@ -25,21 +25,49 @@ BROKEN_S_MIN = 50
 _WATERMARK = re.compile(r"From the Library of [^\n]{1,80}?\s*ptg\d{6,}|\bptg\d{6,}\b")
 
 
+# Typographic ligatures: "efﬁciency" contains one character "ﬁ", so it would
+# not match "efficiency" in a search.
+_LIGATURES = str.maketrans({"\ufb00": "ff", "\ufb01": "fi", "\ufb02": "fl", "\ufb03": "ffi",
+                            "\ufb04": "ffl", "\ufb05": "st", "\ufb06": "st"})
+# Download stamps on every page of papers from IEEE Xplore, naming the
+# institution: "Authorized licensed use limited to: … Restrictions apply."
+_STAMP = re.compile(r"Authorized licensed use limited to:[^\n]{0,250}?Restrictions apply\.?")
+# Letter spacing that splits a capital from the rest of its word ("T able 1",
+# "T o ensure", "V ery"), common in some journals' PDFs. Joined only where it
+# happens throughout a document, since "T cells" is a real phrase elsewhere.
+_SPLIT_CAPITAL = re.compile(r"\b([TVWY]) ([a-z]+)\b")
+SPLIT_CAPITAL_MIN = 10
+# Small capitals in numbered headings come out as "VIII. C ONCLUSION".
+_SPLIT_HEADING = re.compile(r"(\b[IVX]+\.\s+)([A-Z]) ([A-Z]{2,})\b")
+
+
 def repair(pages: Pages, report: dict | None = None) -> Pages:
-    """Fix the broken-"s" font problem and remove eBook watermarks."""
+    """Undo common PDF text problems: the broken-"s" font, ligatures, split
+    capitals and small-capital headings; remove eBook watermarks and download
+    stamps. `report` receives the counts."""
     whole = "".join(text for _, text in pages)
     broken = len(_BROKEN_S.findall(whole)) + len(re.findall(r"(?<=[A-Za-z]\u2212)\u2212(?![a-z])", whole))
     fix_s = broken >= BROKEN_S_MIN and broken >= 0.5 * whole.count("s")
-    marks = 0
+    join_capitals = len(_SPLIT_CAPITAL.findall(whole)) >= SPLIT_CAPITAL_MIN
+    counts = {"watermarks": 0, "stamps": 0, "ligatures": 0, "split_words": 0}
     out = []
     for page, text in pages:
         if fix_s:                  # twice: "acce−−" needs the first "s" before the second
             text = _BROKEN_S.sub("s", _BROKEN_S.sub("s", text))
+        counts["ligatures"] += len(re.findall("[\ufb00-\ufb06]", text))
+        text = text.translate(_LIGATURES)
+        if join_capitals:
+            text, n = _SPLIT_CAPITAL.subn(r"\1\2", text)
+            counts["split_words"] += n
+        text, n = _SPLIT_HEADING.subn(r"\1\2\3", text)
+        counts["split_words"] += n
         text, n = _WATERMARK.subn(" ", text)
-        marks += n
+        counts["watermarks"] += n
+        text, n = _STAMP.subn(" ", text)
+        counts["stamps"] += n
         out.append((page, text))
     if report is not None:
-        report.update(repaired_s=broken if fix_s else 0, watermarks=marks)
+        report.update(repaired_s=broken if fix_s else 0, **counts)
     return out
 
 

@@ -340,3 +340,11 @@ def test_add_force_reindexes_an_unchanged_file(cli, env, capsys):
     assert "chunks stored" in out and "repaired 60 characters" in out
     assert store(cli).count() == count
     assert "distribution protocol" in store(cli).keyword_search("default label distribution protocol LDP", 1)[0]["text"]
+
+
+def test_empty_answer_is_an_error_and_not_saved(cli, env, ollama, monkeypatch, capsys):
+    cli.main(["add", write(env / "laptops.txt", BOOK)])
+    ollama.answer = "<think>long reasoning that used all the room</think>"
+    run_chat(cli, monkeypatch, ["battery?", "/history"])
+    out = capsys.readouterr().out
+    assert "returned no answer" in out and "No history yet" in out

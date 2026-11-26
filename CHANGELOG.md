@@ -5,6 +5,18 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.4.3] - 2026-11-26
+
+### Fixed
+- Typographic ligatures ("efﬁciency" written with a single "ﬁ" character) split words in keyword search. They are now replaced with plain letters.
+- Letter spacing that splits capitals from their words ("T able 1", "T o ensure", "V ery") is repaired in documents where it happens throughout.
+- Small-capital section headings in IEEE papers ("VIII. C ONCLUSION") were not recognised, so summaries missed the conclusion.
+- Table captions written without a space ("Table 1.Comparative…") are recognised.
+- The IEEE Xplore download stamp ("Authorized licensed use limited to: … Restrictions apply."), which names the downloading institution, is removed from every page.
+- A model that returned nothing (a reasoning model can spend all its room on thinking) left a blank reply. It is now reported as an error and kept out of the conversation.
+
+Re-index affected documents once with `POST /index/<file>?force=true` (web) or `rag_cli.py add --force` (CLI).
+
 ## [2.4.2] - 2026-11-26
 
 ### Fixed

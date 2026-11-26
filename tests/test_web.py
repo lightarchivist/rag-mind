@@ -283,3 +283,10 @@ def test_force_reindex_replaces_an_indexed_file(web):
     assert status["status"] == "done" and status["repaired_s"] == 60
     assert web.get_index().sources()["book.txt"] == chunks          # replaced, not duplicated
     assert len(web.get_index()) == chunks
+
+
+def test_empty_answer_is_reported_as_an_error(web, ollama):
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    ollama.answer = "   "
+    head, answer = chat(web, "What is the battery life?")
+    assert answer.strip().startswith("[ERROR:") and "returned no answer" in answer
