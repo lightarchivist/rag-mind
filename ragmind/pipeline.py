@@ -73,9 +73,19 @@ def context_window(client: OllamaClient, settings: Settings, model: str) -> int:
 
 
 _FOLLOWUP_WORDS = re.compile(
-    r"\b(it|its|it's|they|them|their|this|that|these|those|he|she|his|her|there|"
+    r"\b(it|its|it's|they|them|their|this|these|those|he|she|his|her|there|"
     r"above|previous|earlier|former|latter|same|"
     r"(the )?(first|second|third|last|other|which) (one|point|item|step|part))\b", re.I)
+# "that" points back at the conversation in "explain that", "is that true?",
+# "how does that work?", "that one", "that method"; but not when it joins a
+# clause: "What does TI-LFA provide that classic LFA does not?"
+_THAT_REFERS = re.compile(
+    r"\bthat\s*(?:[?.!,;:]|$)"
+    r"|\b(?:about|of|on|for|with|from|like|regarding|explain|describe|clarify|is|was|are|were|"
+    r"does|did|do|can|could|would|will|should|why|how)\s+that\b"
+    r"|\bthat\s+(?:one|ones|step|point|part|item|approach|method|technique|model|paper|document|"
+    r"book|chapter|section|table|figure|example|answer|result|protocol|concept|feature|option|"
+    r"case|number|value|idea|solution|tool|list|command|configuration|setting|claim)s?\b", re.I)
 _FOLLOWUP_START = re.compile(r"^\s*(and|but|also|so|then|what about|how about)\b", re.I)
 _MORE = re.compile(r"\b(elaborate|expand on|more detail|in detail|explain further|go on|continue|"
                    r"tell me more|why is that|why not)\b", re.I)
@@ -89,7 +99,8 @@ def looks_like_followup(question: str) -> bool:
     q = question.strip()
     # "these papers", "both documents" point at the documents, not the conversation.
     bare = _CORPUS_REF.sub(" ", q)
-    if _FOLLOWUP_WORDS.search(bare) or _FOLLOWUP_START.search(bare) or _MORE.search(bare):
+    if (_FOLLOWUP_WORDS.search(bare) or _THAT_REFERS.search(bare) or _FOLLOWUP_START.search(bare)
+            or _MORE.search(bare)):
         return True
     if is_broad(q):
         return False                      # "Summarise the key findings" stands on its own

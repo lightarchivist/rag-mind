@@ -743,6 +743,16 @@ def test_citation_brackets_and_grouped_sources():
                                      ([4], "a.pdf, p. 9", "")]
 
 
+def test_that_counts_only_when_it_points_back():
+    for q in ("Explain that", "Is that true?", "How does that work in IOS XR?",
+              "Tell me more about that approach", "What about that one?"):
+        assert pipeline.looks_like_followup(q), q
+    for q in ("What does TI-LFA provide that classic LFA does not?",
+              "Which routers run the protocol that carries labels between PEs?",
+              "Why does the book say that SR removes the need for LDP?"):
+        assert not pipeline.looks_like_followup(q), q
+
+
 def test_rewrite_keeps_descriptions_unnamed(ollama):
     history = [{"q": "Which model performed best?", "a": "Model B on dataset X [1]."}]
     client = OllamaClient(ollama.url)

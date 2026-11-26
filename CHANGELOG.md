@@ -5,6 +5,11 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.3.1] - 2026-11-26
+
+### Fixed
+- Complete questions containing "that" as a joining word ("What does X provide that Y does not?") were treated as follow-ups: rewritten, and answered with the earlier conversation. "That" now counts only when it points back ("explain that", "is that true?", "that one").
+
 ## [2.3.0] - 2026-11-26
 
 ### Added
