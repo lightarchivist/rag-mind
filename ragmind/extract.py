@@ -1,6 +1,7 @@
 """Text extraction. Returns a list of (page_number, text) so answers can cite
 pages; formats without pages return a single (None, text) entry."""
 
+import collections
 import os
 import re
 
@@ -41,6 +42,27 @@ SPLIT_CAPITAL_MIN = 10
 _SPLIT_HEADING = re.compile(r"(\b[IVX]+\.\s+)([A-Z]) ([A-Z]{2,})\b")
 
 
+# The same watermark without the "ptg" number: "From the Library of <Name>".
+# It is removed only when one name repeats on many pages, which ordinary text
+# ("From the Library of Congress", once) never does.
+_LIBRARY_OF = re.compile(r"From the Library of ((?:[A-Z][\w'’.-]*)(?:[ \t]+[A-Z][\w'’.-]*){0,3})")
+WATERMARK_MIN = 10
+
+
+def _watermark_names(whole: str) -> list[str]:
+    """Names that follow "From the Library of" on many pages (longest form first)."""
+    counts = collections.Counter()
+    for m in _LIBRARY_OF.finditer(whole):
+        words = m.group(1).split()
+        for k in range(1, len(words) + 1):
+            counts[" ".join(words[:k])] += 1
+    names = [n for n, c in counts.items() if c >= WATERMARK_MIN]
+    # Keep the longest form that is still common: "Jane Doe" rather than "Jane".
+    keep = [n for n in names if not any(o != n and o.startswith(n + " ") and counts[o] >= 0.8 * counts[n]
+                                         for o in names)]
+    return sorted(keep, key=len, reverse=True)
+
+
 def repair(pages: Pages, report: dict | None = None) -> Pages:
     """Undo common PDF text problems: the broken-"s" font, ligatures, split
     capitals and small-capital headings; remove eBook watermarks and download
@@ -49,6 +71,8 @@ def repair(pages: Pages, report: dict | None = None) -> Pages:
     broken = len(_BROKEN_S.findall(whole)) + len(re.findall(r"(?<=[A-Za-z]\u2212)\u2212(?![a-z])", whole))
     fix_s = broken >= BROKEN_S_MIN and broken >= 0.5 * whole.count("s")
     join_capitals = len(_SPLIT_CAPITAL.findall(whole)) >= SPLIT_CAPITAL_MIN
+    owners = [re.compile(r"From the Library of " + re.escape(n) + r"(?:\s*ptg\d{6,})?")
+              for n in _watermark_names(whole)]
     counts = {"watermarks": 0, "stamps": 0, "ligatures": 0, "split_words": 0}
     out = []
     for page, text in pages:
@@ -63,6 +87,9 @@ def repair(pages: Pages, report: dict | None = None) -> Pages:
         counts["split_words"] += n
         text, n = _WATERMARK.subn(" ", text)
         counts["watermarks"] += n
+        for owner in owners:
+            text, n = owner.subn(" ", text)
+            counts["watermarks"] += n
         text, n = _STAMP.subn(" ", text)
         counts["stamps"] += n
         out.append((page, text))

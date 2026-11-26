@@ -122,6 +122,19 @@ def test_split_capitals_are_joined_only_when_common(tmp_path):
     assert out == text
 
 
+def test_watermark_without_number_is_removed_when_it_repeats(tmp_path):
+    pages = "".join(f"Page {i} text about MPLS.\nFrom the Library of Jane Q Doe\n{400 + i} Cisco Guide\n"
+                    for i in range(12))
+    report = {}
+    [(_, out)] = extract_pages(write(tmp_path / "book.txt", pages + "Sources: From the Library of Congress."), report)
+    assert "Jane" not in out and "Doe" not in out and report["watermarks"] == 12
+    assert "From the Library of Congress" in out                 # once: ordinary text
+    assert "403 Cisco Guide" in out                                # the rest of the line stays
+    few = "From the Library of Jane Doe. " * 3 + "Normal text. " * 10
+    [(_, out)] = extract_pages(write(tmp_path / "few.txt", few))
+    assert out == few
+
+
 def test_real_minus_signs_are_left_alone(tmp_path):
     maths = "With n\u22121 links and x \u2212 y = 3, the cost is small. " * 30   # plenty of real "s"
     [(_, text)] = extract_pages(write(tmp_path / "paper.txt", maths), report := {})

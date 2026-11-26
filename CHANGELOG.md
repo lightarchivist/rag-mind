@@ -5,6 +5,11 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.4.4] - 2026-11-26
+
+### Fixed
+- eBook watermarks that show only "From the Library of <name>", without the ptg number, stayed in the text, including the owner's name. A name that follows "From the Library of" on many pages of a document is now removed; a single occurrence in ordinary text is left alone. Re-index affected books once.
+
 ## [2.4.3] - 2026-11-26
 
 ### Fixed
