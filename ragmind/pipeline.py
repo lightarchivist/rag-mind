@@ -18,8 +18,9 @@ from .ollama import OllamaClient, OllamaError, normalize
 
 # Bump when stored vectors change meaning (prefixes, chunking), so old indexes
 # are detected and rebuilt instead of silently giving worse results.
-# v1 = original RagMind (no prefixes); v2 = task prefixes + page metadata.
-INDEX_FORMAT = 2
+# v1 = original RagMind (no prefixes); v2 = task prefixes + page metadata;
+# v3 = document titles and section headings, embedded with each chunk.
+INDEX_FORMAT = 3
 
 # Some embedding models are trained with task prefixes; using them noticeably
 # improves retrieval. Keyed by model name without tag.
@@ -64,6 +65,17 @@ def embed_documents(client: OllamaClient, settings: Settings, texts: list[str],
     return vectors
 
 
+MAX_TITLE = 120
+
+
+def embedding_text(text: str, title: str = "", heading: str = "") -> str:
+    """What is embedded for a chunk: the document's title and the chunk's section,
+    then the chunk. A passage that says "the proposed method" is then also about
+    the paper and the section it is in. The stored text stays the chunk alone."""
+    context = " | ".join(p for p in (title[:MAX_TITLE].strip(), heading.strip()) if p)
+    return f"{context}\n{text}" if context else text
+
+
 def embed_query(client: OllamaClient, settings: Settings, text: str) -> list[float]:
     return client.embed(settings.embed_model, [_prefixes(settings.embed_model)[1] + text])[0]
 
@@ -91,6 +103,25 @@ _MORE = re.compile(r"\b(elaborate|expand on|more detail|in detail|explain furthe
                    r"tell me more|why is that|why not)\b", re.I)
 
 
+# A pronoun in a second clause can point back at the first clause of the same
+# question: "What are the three signals in the framework, and how are they combined?"
+_CLAUSE_BREAK = re.compile(r"[,;]|\b(?:and|or|but)\b", re.I)
+_PRONOUN = re.compile(r"^(it|its|it's|they|them|their|this|these|those|he|she|his|her)$", re.I)
+MIN_FIRST_CLAUSE = 5    # words a first clause needs before a later pronoun can refer to it
+
+
+def _refers_within(text: str, match) -> bool:
+    """Is this pronoun in a later clause, after a first clause long enough to
+    name what it refers to?"""
+    if not _PRONOUN.match(match.group(0)):
+        return False
+    breaks = list(_CLAUSE_BREAK.finditer(text, 0, match.start()))
+    if not breaks:
+        return False
+    first = text[:breaks[0].start()]
+    return len(first.split()) >= MIN_FIRST_CLAUSE and not _FOLLOWUP_WORDS.search(first)
+
+
 def looks_like_followup(question: str) -> bool:
     """Does the question lean on the conversation? Only such questions are
     rewritten before searching and shown the earlier conversation; a complete
@@ -99,7 +130,8 @@ def looks_like_followup(question: str) -> bool:
     q = question.strip()
     # "these papers", "both documents" point at the documents, not the conversation.
     bare = _CORPUS_REF.sub(" ", q)
-    if (_FOLLOWUP_WORDS.search(bare) or _THAT_REFERS.search(bare) or _FOLLOWUP_START.search(bare)
+    pointing = [m for m in _FOLLOWUP_WORDS.finditer(bare) if not _refers_within(bare, m)]
+    if (pointing or _THAT_REFERS.search(bare) or _FOLLOWUP_START.search(bare)
             or _MORE.search(bare)):
         return True
     if is_broad(q):
@@ -639,6 +671,65 @@ def named_documents(question: str, keys: list[str], results: list[dict]) -> list
     return list(dict.fromkeys(r["key"] for r in results if r.get("key") in scores))[:2]
 
 
+# ── questions that name documents ("the quiet meadows paper") ───────────────
+# A document is named by words from its title or file name placed before a
+# word for a document: "the SDN paper", "the Trust-Weighted framework", "the CCDE
+# guide", or after one: "the paper on quiet meadows".
+_DOC_NOUN = r"(papers?|books?|guides?|articles?|stud(?:y|ies)|documents?|reports?|surveys?|frameworks?|systems?|pdfs?)"
+# A word of a name: not a function or question word ("the authors of the SDN paper"
+# names "SDN", not "authors of the SDN").
+_NAME_WORD = r"(?:(?!(?:the|a|an|of|in|on|from|by|for|to|or|with|what|which|how|where|when|who|why|is|are|was|were|did|does|do|use|used|say|says)\b)[\w.+-]+)"
+_NAMED_BEFORE = re.compile(rf"\b(?:the|in|from|of|by)\s+((?:{_NAME_WORD}\s+){{1,6}}?){_DOC_NOUN}\b", re.I)
+_NAMED_AFTER = re.compile(rf"\b{_DOC_NOUN}\s+(?:on|about|called|titled|named)\s+((?:{_NAME_WORD}\s*){{1,5}})", re.I)
+# Words in such a phrase that describe rather than name: "the whole SPCOR book".
+_NOT_NAMING = {"whole", "entire", "proposed", "same", "other", "first", "second", "third", "last",
+               "new", "original", "above", "previous", "earlier", "both", "two", "three", "each",
+               "every", "your", "my", "our", "its", "their", "this", "that", "these", "those",
+               "current", "indexed", "uploaded", "given", "following", "main", "overall", "full",
+               "cited", "related"}
+MAX_NAMED = 4           # a phrase matching more documents than this doesn't name one
+
+
+def _name_words(text: str) -> set[str]:
+    from .keyword import stem
+    return {stem(w) for w in re.findall(r"[a-z0-9]+", text.lower())}
+
+
+def _phrases(question: str) -> list[tuple[set[str], bool]]:
+    """(name words, plural) for each name in the question. "the SDN and
+    hierarchical papers" gives two names, each naming one document."""
+    from .keyword import stem
+    out = []
+    for pattern, words_at, noun_at in ((_NAMED_BEFORE, 1, 2), (_NAMED_AFTER, 2, 1)):
+        for m in pattern.finditer(question):
+            noun = m.group(noun_at).lower()
+            plural = noun == "studies" or (noun.endswith("s") and noun != "pdfs")
+            parts = re.split(r"\s+and\s+|,\s*", m.group(words_at).strip(), flags=re.I)
+            for part in parts:
+                words = {stem(w) for w in re.findall(r"[a-z0-9]+", part.lower()) if w not in _NOT_NAMING}
+                if words:
+                    out.append((words, plural and len(parts) == 1))
+    return out
+
+
+def documents_named(question: str, titles: dict[str, str]) -> list[str]:
+    """The documents a question names, in the order it names them. `titles` is
+    {document key: title}; a document's name is its title plus its file name.
+    A phrase picks the documents whose names contain all its words: one
+    document, or several for a plural ("the RAG papers")."""
+    if len(titles) < 2:
+        return []
+    names = {k: _name_words(f"{t} {os.path.splitext(os.path.basename(k))[0]}") for k, t in titles.items()}
+    found = []
+    for phrase, plural in _phrases(question):
+        matching = [k for k, words in names.items() if phrase <= words]
+        # "the RAG papers" may name several; "the cert guide" in a shelf of cert guides names none.
+        if not matching or len(matching) > (MAX_NAMED if plural else 1):
+            continue
+        found += [k for k in matching if k not in found]
+    return found
+
+
 def title_page_chunks(corpus, key) -> list[dict]:
     """The first chunks of a document, up to its abstract."""
     head = corpus.chunk_range(key, 0, min(TITLE_PAGE, corpus.chunk_count(key)))
@@ -650,13 +741,102 @@ def title_page_chunks(corpus, key) -> list[dict]:
     return out
 
 
+# ── depth and breadth ─────────────────────────────────────────────────────────
+# "Explain how X works" needs one section read further; "Which chapters cover X?"
+# needs short passages from many sections rather than several from one.
+_DEPTH = re.compile(
+    r"\b(explain\w*|elaborate|in (?:more |greater |full )?detail|step[- ]by[- ]step|walk (?:me )?through|"
+    r"describe\w* how|how (?:does|do|is|are|did|was|were)\b[^?]*\b(?:work|works|done|performed|"
+    r"implemented|calculated|computed|combined|built|configured|structured|organi[sz]ed))\b", re.I)
+_BREADTH = re.compile(
+    r"\b(?:which|what|in which) (?:chapters?|sections?|parts?)\b"
+    r"|\bwhere\b[^?]*\b(?:discuss\w*|cover\w*|mention\w*|describ\w*|explain\w*|talk\w*|introduc\w*|"
+    r"address\w*|appear\w*)\b"
+    r"|\b(?:across|throughout)\b|\ball the (?:places|sections|chapters)\b", re.I)
+DEPTH_EXTRA = 2         # further chunks of the same section added to the best passage
+PER_SECTION = 2         # passages per section for breadth questions
+BREADTH_EXTRA = 2       # breadth questions get this many passages more than top_k
+FOLLOWUP_EXTRA = 2      # passages found with the previous answer, for follow-ups
+
+
+def asks_for_depth(question: str) -> bool:
+    return bool(_DEPTH.search(question)) and not _BREADTH.search(question)
+
+
+def asks_for_breadth(question: str) -> bool:
+    return bool(_BREADTH.search(question))
+
+
+def spread(chunks: list[dict], n: int, per_section: int = PER_SECTION) -> list[dict]:
+    """The best `n` passages with at most `per_section` from any one section
+    (of any one document); the rest fill up only if there are too few sections."""
+    from .structure import section_of
+    taken, counts, rest = [], {}, []
+    for ch in chunks:
+        where = (ch.get("key") or ch["source"], section_of(ch.get("heading", "")) or ch.get("page"))
+        if counts.get(where, 0) < per_section:
+            counts[where] = counts.get(where, 0) + 1
+            taken.append(ch)
+        else:
+            rest.append(ch)
+    return (taken + rest)[:n]
+
+
+def with_more_of_section(corpus, chunks: list[dict], extra: int = DEPTH_EXTRA) -> list[dict]:
+    """Extend the best passage with the chunks after it, as long as they stay in
+    its section (with_following_text has already added the first one)."""
+    if not chunks:
+        return chunks
+    first = chunks[0]
+    key, cid = first.get("key"), first.get("chunk_id")
+    if key is None or cid is None:
+        return chunks
+    texts = {c["text"] for c in chunks}
+    layout = doc_layout(corpus, key)
+    text = first["text"]
+    for nxt in corpus.chunk_range(key, cid + 2, cid + 2 + extra):
+        if (nxt.get("heading", "") != first.get("heading", "") or nxt["text"] in texts
+                or is_boilerplate(nxt["text"]) or in_back_matter(layout, nxt.get("chunk_id"), include_appendix=False)):
+            break
+        text = merge_overlapping(text, nxt["text"])
+    return [dict(first, text=text)] + chunks[1:] if text != first["text"] else chunks
+
+
+def corpus_titles(corpus) -> dict:
+    """{document key: title}; file names stand in when the corpus has no titles."""
+    if corpus is None:
+        return {}
+    if hasattr(corpus, "titles"):
+        return corpus.titles()
+    return {k: os.path.splitext(os.path.basename(k))[0] for k in corpus.keys()}
+
+
+def _named_note(keys: list[str], titles: dict) -> str:
+    names = "; ".join(f"{os.path.basename(k)} (\"{titles[k]}\")" if titles.get(k) else os.path.basename(k)
+                      for k in keys)
+    if len(keys) == 1:
+        return (f"The question names one document: {names}. The passages come from it only; "
+                "if it does not say what the question asks, say so.")
+    return (f"The question names {len(keys)} documents: {names}. Passages from each are included. "
+            "Keep apart what each document says, and say which one each point comes from.")
+
+
+def _merge_best(*lists: list[dict]) -> list[dict]:
+    merged = {}
+    for r in (r for rows in lists for r in rows):
+        if r["text"] not in merged or r["score"] > merged[r["text"]]["score"]:
+            merged[r["text"]] = r
+    return list(merged.values())
+
+
 def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
             history: list[dict], search: Callable[[list[float], int], list[dict]],
             corpus=None) -> Prepared:
-    """`corpus`, when given, enables broad questions. It needs:
-    keys() -> document keys; search(vector, n, key) -> results within one
-    document; chunk_count(key) -> number of chunks; chunk_range(key, start, stop) ->
-    chunks in document order (with chunk_id)."""
+    """`corpus`, when given, enables broad questions, named documents and the
+    reading of neighbouring chunks. It needs: keys() -> document keys;
+    search(vector, n, key) -> results within one document; chunk_count(key) ->
+    number of chunks; chunk_range(key, start, stop) -> chunks in document order
+    (with chunk_id). Optional: keyword_search(query, n[, key]) and titles()."""
     num_ctx = context_window(client, settings, model)
     history = [h for h in (history or []) if h.get("q") and h.get("a")]
     # The conversation is used only for questions that depend on it. A complete
@@ -670,31 +850,50 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
     vector = embed_query(client, settings, search_query)
 
     keys = corpus.keys() if corpus is not None else []
+    titles = corpus_titles(corpus) if len(keys) >= 2 else {}
+    named = [k for k in documents_named(question, titles) or documents_named(search_query, titles) if k in keys]
+
     if len(keys) >= 2 and (is_broad(question) or is_broad(search_query)):
-        chunks = broad_chunks(corpus, vector, settings, keys)
+        scope = named or keys
+        chunks = broad_chunks(corpus, vector, settings, scope)
         names = list(dict.fromkeys(ch["source"] for ch in chunks))
-        note = (f"The passages come from {len(names)} documents: " + "; ".join(names) +
-                ". Passages marked 'abstract' or 'conclusion' state each document's own findings. "
-                "Cover each document separately, then compare them if asked.")
+        if len(names) == 1:
+            note = (f"The passages come from one document: {names[0]}. Passages marked 'abstract' or "
+                    "'conclusion' state its own findings.")
+        else:
+            note = (f"The passages come from {len(names)} documents: " + "; ".join(names) +
+                    ". Passages marked 'abstract' or 'conclusion' state each document's own findings. "
+                    "Cover each document separately, then compare them if asked.")
         text, used, turns = P.build_prompt(question, chunks, history, num_ctx,
                                            settings.answer_reserve, settings.history_turns, note=note)
-        return Prepared(text, used, search_query, num_ctx, turns, broad=True)
+        return Prepared(text, used, search_query, num_ctx, turns, broad=len(names) > 1)
 
     hybrid = settings.keyword_search and corpus is not None and hasattr(corpus, "keyword_search")
-    pool = settings.top_k * 2 if hybrid else settings.top_k
-    results = search(vector, pool)
-    if search_query != question:
-        # A rewrite can drift from what was asked; search with the original
-        # wording too and keep the best of both.
-        merged = {}
-        for r in results + search(embed_query(client, settings, question), pool):
-            if r["text"] not in merged or r["score"] > merged[r["text"]]["score"]:
-                merged[r["text"]] = r
-        results = list(merged.values())
-    words = []
-    if hybrid:
-        words = corpus.keyword_search(question if search_query == question
-                                      else f"{search_query} {question}", pool)
+    breadth = asks_for_breadth(question)
+    top_k = settings.top_k + (BREADTH_EXTRA if breadth else 0)
+    scopes = named or [None]
+    each = top_k if len(scopes) == 1 else max(3, math.ceil(top_k / len(scopes)))
+    pool = each * (3 if breadth else 2 if hybrid else 1)
+    vectors = [vector] + ([embed_query(client, settings, question)] if search_query != question else [])
+    # A follow-up ("explain the second step") is about what the last answer said:
+    # passages close to that answer are searched for as well.
+    answer_vector = None
+    if history:
+        answer_vector = embed_query(client, settings, f"{history[-1]['a'][:1500]}\n{question}")
+    keyword_query = question if search_query == question else f"{search_query} {question}"
+
+    def similar(vec, n, key):
+        return search(vec, n) if key is None else corpus.search(vec, n, key)
+
+    def keyword(n, key):
+        if not hybrid:
+            return []
+        if key is None:
+            return corpus.keyword_search(keyword_query, n)
+        try:
+            return corpus.keyword_search(keyword_query, n, key)
+        except TypeError:                     # a corpus whose keyword search has no key
+            return [r for r in corpus.keyword_search(keyword_query, n * 3) if r.get("key") == key][:n]
 
     def outside_reference_lists(rows):
         # Reference lists match many questions on wording alone ("FWOS" came from one).
@@ -703,22 +902,49 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
         return [r for r in rows if r.get("key") is None or not in_back_matter(
             doc_layout(corpus, r["key"]), r.get("chunk_id"), include_appendix=False)]
 
-    results, words = outside_reference_lists(results), outside_reference_lists(words)
-    if hybrid:
-        chunks = fuse(results, words, settings.top_k, settings.min_score)
-    else:
-        chunks = select(results, settings.top_k, settings.min_score)
+    groups, first_results = [], []
+    for key in scopes:
+        # A rewrite can drift from what was asked; search with the original
+        # wording too and keep the best of both.
+        results = outside_reference_lists(_merge_best(*(similar(v, pool, key) for v in vectors)))
+        words = outside_reference_lists(keyword(pool, key))
+        first_results += results
+        want = each * 2 if breadth else each
+        found = fuse(results, words, want, settings.min_score) if hybrid else \
+            select(results, want, settings.min_score)
+        if breadth:
+            found = spread(found, each)
+        if answer_vector is not None:
+            seen = {r["text"] for r in found}
+            extra = [r for r in outside_reference_lists(similar(answer_vector, each, key))
+                     if r["text"] not in seen and r["score"] >= settings.min_score]
+            found += extra[:FOLLOWUP_EXTRA]
+        groups.append(found)
+    chunks = []
+    for i in range(max((len(g) for g in groups), default=0)):
+        chunks += [g[i] for g in groups if i < len(g)]
+
     if corpus is not None and (asks_about_authors(question) or asks_about_authors(search_query)):
-        front = [ch for key in named_documents(question + " " + search_query, corpus.keys(), results)
-                 for ch in title_page_chunks(corpus, key)]
+        who = named or named_documents(question + " " + search_query, corpus.keys(), first_results)
+        front = [ch for key in who for ch in title_page_chunks(corpus, key)]
         seen = {ch["text"] for ch in front}
         chunks = front + [ch for ch in chunks if ch["text"] not in seen]
     if corpus is not None:
-        chunks = label_tables(corpus, with_preceding_text(corpus, with_following_text(corpus, chunks)))
+        chunks = with_preceding_text(corpus, with_following_text(corpus, chunks))
+        if asks_for_depth(question) and len(scopes) == 1:
+            chunks = with_more_of_section(corpus, chunks)
+        chunks = label_tables(corpus, chunks)
     if settings.grade_chunks and chunks:
         chunks = grade_chunks(client, model, search_query, chunks, num_ctx)
+    notes = []
+    if named:
+        notes.append(_named_note(named, titles))
+    if breadth:
+        notes.append("The question asks where a topic is covered. The passages come from different "
+                     "sections, named in their labels; say which sections cover it.")
     text, used, turns = P.build_prompt(question, chunks, history, num_ctx,
-                                       settings.answer_reserve, settings.history_turns)
+                                       settings.answer_reserve, settings.history_turns,
+                                       note="\n".join(notes))
     return Prepared(text, used, search_query, num_ctx, turns)
 
 

@@ -220,6 +220,7 @@
     border: 1px solid var(--border); border-radius: 4px; cursor: zoom-in; }
   .page-missing { font-size: 11px; color: var(--muted); }
   .source-passage .src-head { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .source-passage .src-context { font-size: 11px; color: var(--muted); font-style: italic; margin: -2px 0 6px; }
   .typing { display: flex; gap: 4px; align-items: center; padding: 10px 14px; }
   .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce .8s infinite; }
   .typing span:nth-child(2) { animation-delay: .15s; }
@@ -925,9 +926,12 @@ function renderSources(div, header) {
   groups.forEach((g, gi) => {
     const tag = document.createElement('span');
     tag.className = 'source-tag';
-    tag.innerHTML = `<b>[${g.numbers.join(', ')}]</b> ${esc(g.cite)}${g.section ? ' · ' + esc(g.section) : ''}`;
+    // The section's own heading, shortened; the passage shows the full path.
+    const where = g.section.length > 48 ? g.section.slice(0, 46).trimEnd() + '…' : g.section;
+    tag.innerHTML = `<b>[${g.numbers.join(', ')}]</b> ${esc(g.cite)}${where ? ' · ' + esc(where) : ''}`;
     if (g.items.length) {
-      tag.title = g.items.length > 1 ? 'Show these passages' : 'Show this passage';
+      tag.title = (g.items.length > 1 ? 'Show these passages' : 'Show this passage') +
+                  (where !== g.section ? '\n' + g.section : '');
       tag.onclick = () => togglePassage(div, tag, gi, g.items);
     }
     div.appendChild(tag);
@@ -949,6 +953,14 @@ function togglePassage(div, tag, id, items) {
     if (k) head.style.marginTop = '10px';
     head.textContent = `[${n}] ${passage.cite}${passage.section ? ' · ' + passage.section : ''}`;
     box.appendChild(head);
+    // Which document and section this is: "Title" › 3. Method › 3.2 Data
+    const context = [passage.title ? `“${passage.title}”` : '', passage.heading || ''].filter(Boolean).join(' › ');
+    if (context && (!k || items[k - 1].passage.title !== passage.title || items[k - 1].passage.heading !== passage.heading)) {
+      const sub = document.createElement('div');
+      sub.className = 'src-context';
+      sub.textContent = context;
+      box.appendChild(sub);
+    }
     const body = document.createElement('div');
     body.className = 'src-text';
     body.textContent = passage.text;

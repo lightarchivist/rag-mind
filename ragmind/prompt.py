@@ -40,19 +40,47 @@ def tidy_citations(text: str) -> str:
     return text.translate(_CITATION_BRACKETS)
 
 
+SEP = " › "     # between heading levels (as in structure.SEP)
+
+
+def place(chunk: dict) -> str:
+    """Where in the document a passage is, briefly: its own heading and, for
+    passages picked as a document's abstract or conclusion, that role
+    ("4.2 Training data", "Abstract, abstract" is shortened to "Abstract")."""
+    heading = (chunk.get("heading") or "").rsplit(SEP, 1)[-1]
+    role = chunk.get("section", "")
+    if role and heading.lower().endswith(role.lower()):
+        role = ""
+    return ", ".join(p for p in (heading, role) if p)
+
+
 def group_sources(chunks: list[dict]) -> list[tuple[list[int], str, str]]:
     """Passages from the same document, page and section share one entry:
     ([1, 3, 5], "paper.pdf, p. 1", "abstract"), in order of first appearance."""
     groups: dict = {}
     for i, ch in enumerate(chunks, 1):
-        groups.setdefault((cite(ch), ch.get("section", "")), []).append(i)
-    return [(numbers, c, section) for (c, section), numbers in groups.items()]
+        groups.setdefault((cite(ch), place(ch)), []).append(i)
+    return [(numbers, c, where) for (c, where), numbers in groups.items()]
 
 
 def format_passage(i: int, chunk: dict) -> str:
     # No similarity score here: models copied it into answers ("relevance: 0.78").
+    heading = f", in {chunk['heading']}" if chunk.get("heading") else ""
     section = f", {chunk['section']}" if chunk.get("section") else ""
-    return f"[{i}] (source: {cite(chunk)}{section})\n{chunk['text']}"
+    return f"[{i}] (source: {cite(chunk)}{heading}{section})\n{chunk['text']}"
+
+
+def documents_note(chunks: list[dict]) -> str:
+    """The titles of the documents the passages come from, so the model knows
+    that "the quiet meadows paper" is brightwater-2031.pdf."""
+    titles = {}
+    for ch in chunks:
+        title = (ch.get("title") or "").strip()
+        if title and ch["source"] not in titles and title.lower() != ch["source"].rsplit(".", 1)[0].lower():
+            titles[ch["source"]] = title
+    if not titles:
+        return ""
+    return "Document titles: " + "; ".join(f"{src} = \"{t}\"" for src, t in titles.items()) + "."
 
 
 def _turn(h: dict) -> str:
@@ -69,7 +97,8 @@ def build_prompt(question: str, chunks: list[dict], history: list[dict],
     `note` is an extra line placed just above the passages."""
     budget = max(ctx_tokens - answer_reserve, 256)
     tail = f"User: {question}\nAssistant:"
-    used = estimate_tokens(SYSTEM) + estimate_tokens(tail) + estimate_tokens(note) + 40
+    used = (estimate_tokens(SYSTEM) + estimate_tokens(tail) + estimate_tokens(note)
+            + estimate_tokens(documents_note(chunks)) + 40)
 
     recent = [h for h in (history or [])[-history_turns:] if h.get("q")]
     turns = [_turn(h) for h in recent]
@@ -92,6 +121,8 @@ def build_prompt(question: str, chunks: list[dict], history: list[dict],
         kept_turns.insert(0, t)
         used += cost
 
+    titles = documents_note(passages)
+    note = "\n".join(p for p in (titles, note) if p)
     context = "\n\n".join(format_passage(i, ch) for i, ch in enumerate(passages, 1)) or NO_PASSAGES
     parts = [SYSTEM]
     if kept_turns:

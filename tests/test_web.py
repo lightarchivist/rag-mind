@@ -290,3 +290,41 @@ def test_empty_answer_is_reported_as_an_error(web, ollama):
     ollama.answer = "   "
     head, answer = chat(web, "What is the battery life?")
     assert answer.strip().startswith("[ERROR:") and "returned no answer" in answer
+
+
+SECTIONED = ("Lattice Routing for Quiet Meadows\n\n1. Introduction\n" +
+             "Relays in the meadow are quiet and slow to wake. " * 12 +
+             "\n2. Calibration\n" + "The gain of each relay is set to 3 dB before the field test. " * 12)
+
+
+def test_titles_and_sections_are_stored_and_shown(web, ollama):
+    upload(web, "meadow.txt", SECTIONED); index(web, "meadow.txt")
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    idx = web.get_index()
+    metas = [m for m in idx.metadatas if m["source"] == "meadow.txt"]
+    assert {m["title"] for m in metas} == {"Lattice Routing for Quiet Meadows"}
+    assert {m.get("heading") for m in metas} == {"1. Introduction", "2. Calibration"}
+    assert web.IndexCorpus().titles()["meadow.txt"] == "Lattice Routing for Quiet Meadows"
+    # The embedded text carries the title and section; the stored text is the chunk alone.
+    assert not idx.documents[0].startswith("Lattice Routing for Quiet Meadows |")
+    head, _ = chat(web, "What gain does the quiet meadows paper set for each relay?")
+    assert head["passages"] and {p["source"] for p in head["passages"]} == {"meadow.txt"}
+    calibration = [p for p in head["passages"] if p["heading"] == "2. Calibration"]
+    assert calibration and calibration[0]["section"] == "2. Calibration"
+    assert calibration[0]["title"] == "Lattice Routing for Quiet Meadows"
+    # Keyword search sees the section heading too.
+    assert idx.keyword_search("calibration gain", 5, source_filter="meadow.txt")
+
+
+def test_an_index_from_2_4_asks_for_a_rebuild(web, env):
+    upload(web, "meadow.txt", SECTIONED); index(web, "meadow.txt")
+    idx = web.get_index()
+    idx.signature = dict(idx.signature, format=2)
+    for m in idx.metadatas:
+        m.pop("heading", None); m.pop("title", None)
+    idx.save(web.INDEX_DIR)
+    web._index = None
+    assert "older version" in web.health()["needs_reindex"]
+    bt = BackgroundTasks(); web.reindex(bt); bt.run()
+    assert web.health()["needs_reindex"] is None
+    assert any(m.get("heading") == "2. Calibration" for m in web.get_index().metadatas)

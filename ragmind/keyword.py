@@ -27,8 +27,31 @@ K1, B = 1.2, 0.75
 COMMON = 0.05           # a word in more than 5% of passages doesn't count as distinctive
 
 
+def stem(word: str) -> str:
+    """A light stemmer, so "chunks", "chunked" and "chunking" are one term.
+    Only plain words are changed; "ti-lfa", "802.1q" and "ospfv3" stay as they are.
+    It needs to be consistent rather than linguistically right: the same rules
+    run over the passages and the question."""
+    if not word.isalpha() or len(word) <= 3:
+        return word
+    w = word
+    if w.endswith("ies") and len(w) > 4:
+        w = w[:-3] + "y"
+    elif w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        w = w[:-1]
+    if w.endswith("ing") and len(w) > 5:
+        w = w[:-3]
+        w = w[:-1] if len(w) > 3 and w[-1] == w[-2] and w[-1] not in "lsz" else w
+    elif w.endswith("ed") and len(w) > 5:
+        w = w[:-2]
+        w = w[:-1] if len(w) > 3 and w[-1] == w[-2] and w[-1] not in "lsz" else w
+    if w.endswith("e") and len(w) > 4:
+        w = w[:-1]
+    return w
+
+
 def _words(text: str) -> list[str]:
-    return [t for t in _TOKEN.findall(text.lower()) if t not in STOPWORDS]
+    return [stem(t) for t in _TOKEN.findall(text.lower()) if t not in STOPWORDS]
 
 
 def _parts(word: str) -> list[str]:

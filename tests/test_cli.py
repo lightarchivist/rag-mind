@@ -135,7 +135,7 @@ def test_same_name_in_two_folders_listed_separately(cli, env):
 def test_add_records_index_signature(cli, env):
     cli.main(["add", write(env / "a.txt", BOOK)])
     meta = json.loads((env / "db" / "ragmind_index.json").read_text())
-    assert meta["embed_model"] == "nomic-embed-text:latest" and meta["format"] == 2
+    assert meta["embed_model"] == "nomic-embed-text:latest" and meta["format"] == cli.pipeline.INDEX_FORMAT
 
 
 # ── clear / reindex ───────────────────────────────────────────────────────────
@@ -348,3 +348,21 @@ def test_empty_answer_is_an_error_and_not_saved(cli, env, ollama, monkeypatch, c
     run_chat(cli, monkeypatch, ["battery?", "/history"])
     out = capsys.readouterr().out
     assert "returned no answer" in out and "No history yet" in out
+
+
+def test_cli_stores_titles_and_sections_and_searches_one_document(cli, env):
+    write(env / "docs" / "meadow.txt", "Lattice Routing for Quiet Meadows\n\n1. Introduction\n" +
+          "Relays in the meadow are quiet and slow to wake. " * 12 +
+          "\n2. Calibration\n" + "Labels 0 to 15 are reserved; label 3 is implicit null here. " * 8)
+    write(env / "docs" / "mpls.txt", "General routing notes. " * 40 +
+          "Labels 0 to 15 are reserved; label 3 is implicit null for penultimate hop popping. " +
+          "More general routing notes. " * 40)
+    assert cli.main(["folder", str(env / "docs")]) == 0
+    s = store(cli)
+    meadow = next(k for k in s.keys() if k.endswith("meadow.txt"))
+    assert s.titles()[meadow] == "Lattice Routing for Quiet Meadows"
+    rows = s.chunk_range(meadow, 0, 10)
+    assert {r["heading"] for r in rows} >= {"1. Introduction", "2. Calibration"}
+    q = "Which label values are reserved, and what is label 3?"
+    assert {h["source"] for h in s.keyword_search(q, 5)} == {"meadow.txt", "mpls.txt"}
+    assert {h["source"] for h in s.keyword_search(q, 5, meadow)} == {"meadow.txt"}

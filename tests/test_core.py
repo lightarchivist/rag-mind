@@ -565,7 +565,7 @@ def test_drifting_rewrite_still_finds_original_passages(ollama):
 
     p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3", "and how does it resolve conflicts?",
                          [{"q": "Tell me about the round-table protocol", "a": "It is a discussion."}], search)
-    assert len(calls) == 2
+    assert len(calls) == 3              # rewrite, original wording, previous answer
     assert [c["page"] for c in p.chunks] == [11, 2]
 
 

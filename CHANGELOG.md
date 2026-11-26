@@ -5,6 +5,26 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.0] - 2026-11-26
+
+**Rebuild the index once after updating**: click **Rebuild index** in the web app, or run `python rag_cli.py reindex`. Your files are re-read; nothing needs uploading again.
+
+### Added
+- Sections. Every passage now knows the section it is in, taken from the PDF's bookmarks or, without them, from the numbered headings in the text. The section is shown on the source tags and above each passage, and the model sees it too.
+- Document titles. Each document's title is read from the PDF, or from its first page. A question can name a document by words from its title, even when the file name doesn't contain them ("the anomaly detection paper"), and the search then stays in that document.
+- A question that names two or more documents ("How do the X paper and the Y paper differ…") gets passages from each of them, instead of whichever document happens to match best.
+- "Explain how …" and "… in detail" questions read further into the section of the best passage.
+- "Which chapters discuss …" and "Where does the book cover …" questions get passages from more sections, at most two from any one.
+- Follow-up questions ("Explain the second step in more detail") also search with the previous answer, so they find the passages that answer was based on.
+
+### Changed
+- The section heading and the document title are embedded with each passage, so a passage that says "the proposed method" is also found by what its section and document are about. This is why the index must be rebuilt.
+- Keyword search treats word forms as one word: "chunked", "chunks" and "chunking" match each other.
+
+### Fixed
+- A question whose second half refers to its first ("What are the three signals in the framework, and how are they combined?") was treated as a follow-up and rewritten from the conversation.
+- "Summarise the X paper" summarised every indexed document.
+
 ## [2.4.4] - 2026-11-26
 
 ### Fixed

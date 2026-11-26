@@ -21,13 +21,12 @@ try:
 except ImportError:                       # running from a git checkout: use the repo copy
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from ragmind import __version__, changelog, pages, pipeline, thinking
-from ragmind.chunking import chunk_pages
+from ragmind import __version__, changelog, pages, pipeline, structure, thinking
 from ragmind.config import Settings, load_settings
-from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
-from ragmind.numpy_index import NumpyIndex
+from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError
+from ragmind.numpy_index import NumpyIndex, result
 from ragmind.ollama import ModelNotFound, NotAChatModel, OllamaClient, OllamaError, short
-from ragmind.prompt import cite, tidy_citations
+from ragmind.prompt import cite, place, tidy_citations
 
 DATA_DIR   = os.getenv("DATA_DIR", "/data")
 UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
@@ -63,11 +62,19 @@ def index_problem() -> str | None:
     return pipeline.signature_problem(idx.signature, settings)
 
 
-def _chunk_meta(name, ch):
+def _chunk_meta(name, ch, title=""):
     meta = {"source": name, "chunk_id": ch.chunk_id}
     if ch.page is not None:
         meta["page"] = ch.page
+    if ch.heading:
+        meta["heading"] = ch.heading
+    if title:
+        meta["title"] = title
     return meta
+
+
+def _embedding_texts(texts, metas):
+    return [pipeline.embedding_text(t, m.get("title", ""), m.get("heading", "")) for t, m in zip(texts, metas)]
 
 
 # ─── Ollama errors → HTTP ─────────────────────────────────────────────────────
@@ -111,7 +118,7 @@ def index_file_background(path: str, force: bool = False):
             return
 
         report = {}
-        chunks = chunk_pages(extract_pages(path, report), settings.chunk_size, settings.chunk_overlap)
+        _, chunks, title = structure.load(path, settings.chunk_size, settings.chunk_overlap, report)
         if not chunks:
             raise ValueError("No text found (scanned PDFs need OCR first)")
         if report.get("repaired_s"):
@@ -121,13 +128,14 @@ def index_file_background(path: str, force: bool = False):
             indexing_status[name] = {"status": "indexing", "progress": int(done / total * 100), "chunks": done}
 
         # Embed everything first; the index only changes once all of it worked.
-        vectors = pipeline.embed_documents(ollama, settings, [ch.text for ch in chunks], progress)
+        texts, metas = [ch.text for ch in chunks], [_chunk_meta(name, ch, title) for ch in chunks]
+        vectors = pipeline.embed_documents(ollama, settings, _embedding_texts(texts, metas), progress)
         with index_lock:
             idx = get_index()
             if len(idx) == 0:
                 idx.signature = pipeline.index_signature(settings)
             idx.delete_source(name)
-            idx.add(vectors, [ch.text for ch in chunks], [_chunk_meta(name, ch) for ch in chunks])
+            idx.add(vectors, texts, metas)
             idx.save(INDEX_DIR)
         indexing_status[name] = {"status": "done", "progress": 100, "chunks": len(chunks), **report}
     except (ExtractionError, OllamaError, ValueError, OSError) as e:
@@ -150,13 +158,13 @@ def rebuild_background():
         for name in sources:
             path = os.path.join(UPLOAD_DIR, name)
             if os.path.isfile(path):
-                chunks = chunk_pages(extract_pages(path), settings.chunk_size, settings.chunk_overlap)
-                texts, metas = [ch.text for ch in chunks], [_chunk_meta(name, ch) for ch in chunks]
+                _, chunks, title = structure.load(path, settings.chunk_size, settings.chunk_overlap)
+                texts, metas = [ch.text for ch in chunks], [_chunk_meta(name, ch, title) for ch in chunks]
             else:
                 rows = old.chunks_of(name)
                 texts = [d for d, _ in rows]
                 metas = [dict(m, chunk_id=i) for i, (_, m) in enumerate(rows)]
-            new.add(pipeline.embed_documents(ollama, settings, texts), texts, metas)
+            new.add(pipeline.embed_documents(ollama, settings, _embedding_texts(texts, metas)), texts, metas)
             rebuild_status["done"] += 1
         with index_lock:
             new.save(INDEX_DIR)
@@ -333,9 +341,9 @@ class IndexCorpus:
         with index_lock:
             return get_index().query(vector, n, source_filter=key or "")
 
-    def keyword_search(self, query, n):
+    def keyword_search(self, query, n, key=None):
         with index_lock:
-            return get_index().keyword_search(query, n, source_filter=self.only)
+            return get_index().keyword_search(query, n, source_filter=key or self.only)
 
     def chunk_count(self, key):
         with index_lock:
@@ -344,8 +352,12 @@ class IndexCorpus:
     def chunk_range(self, key, start, stop):
         with index_lock:
             rows = get_index().chunks_of(key)[start:stop]
-        return [{"text": text, "source": m["source"], "page": m.get("page"), "score": None,
-                 "chunk_id": m.get("chunk_id")} for text, m in rows]
+        return [result(text, m) for text, m in rows]
+
+    def titles(self):
+        """{document key: title} for the documents this corpus covers."""
+        with index_lock:
+            return get_index().titles(self.keys())
 
 
 @app.post("/chat/stream")
@@ -376,7 +388,8 @@ def chat_stream(req: ChatRequest):
 
     # Numbered in prompt order, so "[2]" in an answer is the second source tag.
     header = {"sources": [cite(ch) for ch in prepared.chunks],
-              "passages": [{"cite": cite(ch), "section": ch.get("section", ""), "text": ch["text"],
+              "passages": [{"cite": cite(ch), "section": place(ch), "heading": ch.get("heading", ""),
+                            "title": ch.get("title", ""), "text": ch["text"],
                             "source": ch["source"], "page": ch.get("page")}
                            for ch in prepared.chunks],
               "model": short(model.name)}

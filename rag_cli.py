@@ -40,13 +40,13 @@ import sys
 import textwrap
 import time
 
-from ragmind import __version__, pipeline, thinking
-from ragmind.chunking import chunk_pages
+from ragmind import __version__, pipeline, structure, thinking
 from ragmind.config import ENV, Settings, default_config_path, load_settings, save_setting
-from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError, extract_pages
+from ragmind.extract import SUPPORTED_EXTENSIONS, ExtractionError
 from ragmind.ollama import (ModelInfo, ModelNotFound, NotAChatModel, OllamaClient,
                             OllamaError, OllamaUnavailable, short)
 from ragmind.keyword import KeywordIndex
+from ragmind.numpy_index import keyword_texts, result
 from ragmind.prompt import cite, group_sources, tidy_citations
 
 # ─── Colours ──────────────────────────────────────────────────────────────────
@@ -165,13 +165,13 @@ class ChromaStore:
             self.col.delete(where={"file_hash": file_hash})     # earlier run was interrupted
 
         report = {}
-        pages = extract_pages(abs_path, report)
-        chunks = chunk_pages(pages, self.settings.chunk_size, self.settings.chunk_overlap)
+        pages, chunks, title = structure.load(abs_path, self.settings.chunk_size, self.settings.chunk_overlap, report)
         if not chunks:
             return {"status": "empty"}
-        vectors = pipeline.embed_documents(ollama, self.settings, [ch.text for ch in chunks], progress)
+        metadatas = [self._chunk_meta(abs_path, file_hash, ch, len(chunks), title) for ch in chunks]
+        vectors = pipeline.embed_documents(ollama, self.settings,
+                                           _embedding_texts([ch.text for ch in chunks], metadatas), progress)
         ids = [f"{file_hash}_{ch.chunk_id}" for ch in chunks]
-        metadatas = [self._chunk_meta(abs_path, file_hash, ch, len(chunks)) for ch in chunks]
         if self.meta is None:               # fresh index: record its format before writing to it
             self._write_meta(self.collection_name)
         if force:                           # same content, same ids: the old copy goes first
@@ -188,11 +188,15 @@ class ChromaStore:
                 "pages": sum(1 for p, t in pages if p and t.strip()), **report}
 
     @staticmethod
-    def _chunk_meta(abs_path, file_hash, ch, n_chunks):
+    def _chunk_meta(abs_path, file_hash, ch, n_chunks, title=""):
         meta = {"source": os.path.basename(abs_path), "path": abs_path, "file_hash": file_hash,
                 "chunk_id": ch.chunk_id, "n_chunks": n_chunks}
         if ch.page is not None:                 # Chroma rejects None values
             meta["page"] = ch.page
+        if ch.heading:
+            meta["heading"] = ch.heading
+        if title:
+            meta["title"] = title
         return meta
 
     def _rows(self, where=None, col=None):
@@ -214,23 +218,24 @@ class ChromaStore:
             return []
         res = self.col.query(query_embeddings=[vector], n_results=n, where=where,
                              include=["documents", "metadatas", "distances"])
-        return [{"text": doc, "source": meta.get("source", "?"), "page": meta.get("page"),
-                 "score": 1 - dist, "key": meta.get("path") or meta.get("source"),
-                 "chunk_id": meta.get("chunk_id")}
+        return [result(doc, meta, 1 - dist, meta.get("path"))
                 for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0])]
 
-    def keyword_search(self, query, n) -> list[dict]:
-        """Passages containing the query's distinctive words (BM25), best first.
-        The keyword index is built from the collection on first use and rebuilt
-        after any change."""
+    def keyword_search(self, query, n, key=None) -> list[dict]:
+        """Passages containing the query's distinctive words (BM25), best first,
+        overall or within one document. The keyword index is built from the
+        collection on first use and rebuilt after any change."""
         stamp = (self.collection_name, self.count())
         if getattr(self, "_keywords", None) is None or self._keywords[0] != stamp:
             got = self.col.get(include=["documents", "metadatas"])
-            self._keywords = (stamp, KeywordIndex(got["documents"]), got["documents"], got["metadatas"])
+            index = KeywordIndex(keyword_texts(got["documents"], got["metadatas"]))
+            self._keywords = (stamp, index, got["documents"], got["metadatas"])
         _, index, texts, metas = self._keywords
-        return [{"text": texts[i], "source": metas[i].get("source", "?"), "page": metas[i].get("page"),
-                 "score": None, "key": metas[i].get("path") or metas[i].get("source"),
-                 "chunk_id": metas[i].get("chunk_id")} for i, _ in index.search(query, n)]
+        allowed = None
+        if key is not None:
+            allowed = {i for i, m in enumerate(metas) if (m.get("path") or m.get("source")) == key}
+        return [result(texts[i], metas[i], None, metas[i].get("path"))
+                for i, _ in index.search(query, n, allowed)]
 
     # ── corpus interface for broad questions (see pipeline.prepare) ──
     def keys(self) -> list[str]:
@@ -254,8 +259,16 @@ class ChromaStore:
         got = self.col.get(ids=[f"{doc['file_hash']}_{i}" for i in range(start, stop)],
                            include=["documents", "metadatas"])
         rows = sorted(zip(got["documents"], got["metadatas"]), key=lambda r: r[1].get("chunk_id", 0))
-        return [{"text": text, "source": m.get("source", "?"), "page": m.get("page"), "score": None,
-                 "chunk_id": m.get("chunk_id")} for text, m in rows]
+        return [result(text, m, None, m.get("path")) for text, m in rows]
+
+    def titles(self) -> dict:
+        """{document key: title} (the file name without extension when no title is stored)."""
+        out = {}
+        for _, m in self._rows():
+            key = m.get("path") or m.get("source", "?")
+            if key not in out or (m.get("title") and out[key] is None):
+                out[key] = m.get("title")
+        return {k: t or os.path.splitext(os.path.basename(k))[0] for k, t in out.items()}
 
     # ── listing ──
     def documents(self) -> list[dict]:
@@ -312,10 +325,9 @@ class ChromaStore:
                 if path and os.path.isfile(path):
                     with open(path, "rb") as f:
                         file_hash = hashlib.sha256(f.read()).hexdigest()[:16]
-                    chunks = chunk_pages(extract_pages(path), self.settings.chunk_size,
-                                         self.settings.chunk_overlap)
+                    _, chunks, title = structure.load(path, self.settings.chunk_size, self.settings.chunk_overlap)
                     texts = [ch.text for ch in chunks]
-                    metas = [self._chunk_meta(path, file_hash, ch, len(chunks)) for ch in chunks]
+                    metas = [self._chunk_meta(path, file_hash, ch, len(chunks), title) for ch in chunks]
                     stats["from_file"] += 1
                     how = "re-read from file"
                 else:
@@ -332,7 +344,7 @@ class ChromaStore:
                     how = "file not found; kept stored text"
                 if not texts:
                     continue
-                vectors = pipeline.embed_documents(ollama, self.settings, texts)
+                vectors = pipeline.embed_documents(ollama, self.settings, _embedding_texts(texts, metas))
                 ids = [f"{file_hash}_{i}" for i in range(len(texts))]
                 self._add(new_col, ids, vectors, texts, metas)
                 stats["chunks"] += len(texts)
@@ -345,6 +357,10 @@ class ChromaStore:
         if old_name != new_name and old_name in self._collection_names():
             self.db.delete_collection(old_name)
         return stats
+
+
+def _embedding_texts(texts, metas):
+    return [pipeline.embedding_text(t, m.get("title", ""), m.get("heading", "")) for t, m in zip(texts, metas)]
 
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
@@ -537,7 +553,7 @@ def answer_question(store, ollama, settings, model: ModelInfo, question, history
     if prepared.chunks:
         # Numbered like the passages the model saw, so "[2]" in an answer is source 2.
         for numbers, where, section in group_sources(prepared.chunks):
-            section = f" ({section})" if section else ""
+            section = f" · {section}" if section else ""
             print(c(DIM, f"  [{', '.join(map(str, numbers))}] {where}{section}"))
     else:
         print(c(DIM, "  No passages matched closely; the model will say if it can't answer."))

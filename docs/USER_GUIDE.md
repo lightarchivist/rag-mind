@@ -132,6 +132,13 @@ problems, so you don't need to do anything:
 - ligatures (a single "ﬁ" character) are split into normal letters;
 - letter spacing that splits words ("T able") is joined again.
 
+**Titles and sections.** RagMind also reads each document's title (from the
+PDF, or from its first page) and the section every passage is in (from the
+PDF's bookmarks or, without them, from numbered headings such as "3.2 Data" or
+"IV. Results"). You'll see both when you check sources (section 6), and you can
+use the title to name a document in a question (section 5). A document without
+recognisable headings still works; its passages just have no section.
+
 **Scanned PDFs** (pictures of pages without a text layer) index as empty. Run
 them through OCR first.
 
@@ -175,14 +182,29 @@ books it uses their most relevant passages. A note under the answer says
 study one book, because similar books can't compete with it. Remember to set
 CONTEXT back to *All indexed documents* afterwards.
 
-**Naming a document** in the question also helps: "Who are the authors of the
-SDN paper?", "What does the firewall book say about…". Questions about authors
-and affiliations automatically include the title page of the document you name.
+**Naming a document** keeps the search in that document: "Who are the authors
+of the SDN paper?", "What threshold did the anomaly detection study use?", "What
+does the Secure Firewall guide say about…". Use words from its title or file
+name followed by *paper*, *book*, *guide*, *study*, *article*, *report*,
+*survey*, *framework* or *system*. A name that fits several documents ("the
+cert guide" in a shelf of cert guides) is ignored, so add a distinguishing
+word. Questions about authors and affiliations include the title page of the
+document you name.
+
+**Comparing named documents.** "How do the anomaly detection paper and the
+SDN paper differ in…" gets passages from each of the two, and the
+answer keeps them apart.
+
+**Depth and breadth.** "Explain how … works" or "… in detail" reads further
+into the section where the answer starts. "Which chapters discuss …" or "Where
+does the book cover …" collects passages from many sections instead, at most
+two from each, and the answer names the sections.
 
 **Follow-up questions** work: after "Which model performed best?", you can ask
-"And how did the smallest model compare?". RagMind rewrites the follow-up into a
-complete question before searching, and shows it under the answer as
-*searched for: …*. If that line shows a misunderstanding, ask the full question
+"And how did the smallest model compare?" or "Explain the second step in more
+detail". RagMind rewrites the follow-up into a complete question before
+searching, also looks for the passages the previous answer was based on, and
+shows the rewritten question under the answer as *searched for: …*. If that line shows a misunderstanding, ask the full question
 instead.
 
 **"Not found" answers.** If you're sure the information is there, try the
@@ -193,11 +215,14 @@ narrow the question, or set CONTEXT to the document.
 
 ## 6. Checking answers
 
-Every answer ends with **numbered source tags**. **[2]** in the answer is the
-tag marked **[2]**. Passages from the same page and section share a tag, such as
+Every answer ends with **numbered source tags**: file, page and section, such
+as *[2] paper.pdf, p. 4 · 3.2 Training data*. **[2]** in the answer is the tag
+marked **[2]**. Passages from the same page and section share a tag, such as
 **[1, 3, 5]**.
 
-- **Click a tag** to read the exact passages the model was given.
+- **Click a tag** to read the exact passages the model was given. Above them
+  you'll see the document's title and the full section path, for example
+  *"Title" › 3. Method › 3.2 Training data*.
 - **Show page** under a passage displays the PDF page itself, with its figures,
   diagrams and tables as printed. Click the image to open it full size.
 - **Page numbers are PDF pages**, not the numbers printed in a book. In books
@@ -247,8 +272,12 @@ summary *of a topic*: "Summarise what the book says about segment routing".
 
 **Large libraries.** With several books on related subjects (for example three
 networking guides), similar chapters compete for the same question. If an answer
-comes from the wrong book, set CONTEXT to the book you mean, or name it in the
-question.
+comes from the wrong book, name the book in the question ("in the SPCOR
+guide…") or set CONTEXT to it.
+
+**Sections in books** come from the PDF's bookmarks, so a passage shows where it
+is, for example *Chapter 5 › Label Distribution Protocol*. Ask "Which chapters
+discuss…" to find every place a topic comes up.
 
 ---
 

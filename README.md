@@ -6,9 +6,9 @@ Ask natural language questions across PDFs, EPUBs, books, and documents using Ll
 
 [![Licence: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-lightarchivist%2Frag--mind-blue)](https://hub.docker.com/r/lightarchivist/rag-mind)
-[![Version](https://img.shields.io/badge/version-2.4.4-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.0.0-green)](CHANGELOG.md)
 
-**Version 2.4.4.** See [CHANGELOG.md](CHANGELOG.md) for what's new and what was fixed in each
+**Version 3.0.0.** See [CHANGELOG.md](CHANGELOG.md) for what's new and what was fixed in each
 version. The web app shows the current version and its changes under **About**, and the CLI
 prints it with `python rag_cli.py --version`.
 
@@ -24,6 +24,7 @@ What started as a small assignment at ATU has grown into a fully functional loca
 
 -  Upload PDF, EPUB, DOCX, TXT, Markdown
 -  Hybrid search: nomic-embed-text similarity plus keyword (BM25) search for exact terms
+-  Knows documents' titles and sections: name a document in a question, see each passage's section
 -  Streaming answers grounded strictly in your documents, citing file and page
 -  Click a source to read the passage, and view the PDF page itself with its figures and diagrams
 -  Switch between any chat models installed in Ollama
@@ -128,6 +129,7 @@ rag-mind/
 │   ├── ollama.py           ← Ollama client: models, embeddings, streaming, clear errors
 │   ├── extract.py          ← PDF / DOCX / EPUB / HTML / text extraction (with page numbers)
 │   ├── chunking.py         ← Overlapping, sentence-aware chunks
+│   ├── structure.py        ← Document titles and section headings (PDF bookmarks or numbered headings)
 │   ├── prompt.py           ← Prompt building within the model's context window
 │   ├── pipeline.py         ← Retrieval: follow-up rewriting, search, filtering, grading
 │   ├── keyword.py          ← Keyword (BM25) search, combined with similarity search
@@ -208,12 +210,13 @@ Environment variables override `~/.ragmind/config.json` (the web app reads
 | `RAGMIND_KEYWORDS` | `1` | Combine similarity search with keyword search, which finds exact terms ("label 3", "UDP 646") |
 | `RAGMIND_TIMEOUT` | `600` | Seconds to wait for Ollama |
 
-### Upgrading from 1.x
+### Upgrading from an earlier version
 
-Indexes built by earlier versions are detected and must be rebuilt once
-(`python rag_cli.py reindex`, or **Rebuild index** in the web app), because
-vectors are now made with the embedding model's task prefixes, which improves
-search. Files that have moved keep their stored text.
+Indexes built by RagMind 1.x and 2.x are detected and must be rebuilt once
+(`python rag_cli.py reindex`, or **Rebuild index** in the web app). 2.0 added
+the embedding model's task prefixes; 3.0 adds document titles and section
+headings to what is embedded. Files are re-read; files that have moved keep
+their stored text (without sections).
 
 ### Tests
 

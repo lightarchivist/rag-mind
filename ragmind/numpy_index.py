@@ -14,8 +14,22 @@ import pickle
 import numpy as np
 
 from .keyword import KeywordIndex
+from .structure import deepest
 
 NPZ, JSON, LEGACY = "index.npz", "index.json", "index.pkl"
+
+
+def result(text: str, meta: dict, score: float | None = None, key: str | None = None) -> dict:
+    """A stored chunk in the shape the pipeline uses."""
+    return {"text": text, "source": meta.get("source", "?"), "page": meta.get("page"), "score": score,
+            "key": key or meta.get("source"), "chunk_id": meta.get("chunk_id"),
+            "heading": meta.get("heading", ""), "title": meta.get("title", "")}
+
+
+def keyword_texts(documents, metadatas) -> list[str]:
+    """What keyword search sees: a chunk's own section heading, then its text."""
+    return [f"{deepest(m.get('heading', ''))} {d}" if m.get("heading") else d
+            for d, m in zip(documents, metadatas)]
 
 
 class NumpyIndex:
@@ -104,6 +118,15 @@ class NumpyIndex:
             counts[m["source"]] = counts.get(m["source"], 0) + 1
         return counts
 
+    def titles(self, sources=None) -> dict[str, str]:
+        """{source: title} (the file name without extension when no title is stored)."""
+        out = {}
+        for m in self.metadatas:
+            src = m["source"]
+            if src not in out and (sources is None or src in sources):
+                out[src] = m.get("title") or os.path.splitext(src)[0]
+        return out
+
     def chunks_of(self, source: str) -> list[tuple[str, dict]]:
         rows = [(d, m) for d, m in zip(self.documents, self.metadatas) if m["source"] == source]
         return sorted(rows, key=lambda r: r[1].get("chunk_id", 0))
@@ -121,11 +144,11 @@ class NumpyIndex:
         norms = np.linalg.norm(matrix, axis=1) * (np.linalg.norm(q) or 1e-10)
         scores = matrix @ q / np.where(norms == 0, 1e-10, norms)
         top = np.argsort(scores)[::-1][:n]
-        return [{"text": self.documents[rows[i]], "source": self.metadatas[rows[i]]["source"],
-                 "page": self.metadatas[rows[i]].get("page"), "score": float(scores[i]),
-                 "key": self.metadatas[rows[i]]["source"],
-                 "chunk_id": self.metadatas[rows[i]].get("chunk_id")}
-                for i in top]
+        return [self.row(int(rows[i]), float(scores[i])) for i in top]
+
+    def row(self, i: int, score: float | None = None) -> dict:
+        """Stored chunk i as a search result."""
+        return result(self.documents[i], self.metadatas[i], score)
 
 
     def keyword_search(self, query: str, n: int, source_filter: str = "") -> list[dict]:
@@ -133,14 +156,11 @@ class NumpyIndex:
         if len(self) == 0 or n < 1:
             return []
         if self._keywords is None or self._keywords.size != len(self):
-            self._keywords = KeywordIndex(self.documents)
+            self._keywords = KeywordIndex(keyword_texts(self.documents, self.metadatas))
         allowed = None
         if source_filter:
             allowed = {i for i, m in enumerate(self.metadatas) if m["source"] == source_filter}
-        return [{"text": self.documents[i], "source": self.metadatas[i]["source"],
-                 "page": self.metadatas[i].get("page"), "score": None,
-                 "key": self.metadatas[i]["source"], "chunk_id": self.metadatas[i].get("chunk_id")}
-                for i, _ in self._keywords.search(query, n, allowed)]
+        return [self.row(i) for i, _ in self._keywords.search(query, n, allowed)]
 
 
 class _LegacyVectorIndex:
