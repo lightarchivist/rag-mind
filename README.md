@@ -18,6 +18,8 @@ What started as a small assignment at ATU has grown into a fully functional loca
 
 ---
 
+**New to RagMind? Read the [User Guide](docs/USER_GUIDE.md)**: starting and stopping, adding documents, asking good questions, checking answers, choosing a model, backups and troubleshooting.
+
 ## Features
 
 -  Upload PDF, EPUB, DOCX, TXT, Markdown
