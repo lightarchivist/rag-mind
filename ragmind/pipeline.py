@@ -103,7 +103,7 @@ def rewrite_followup(client: OllamaClient, model: str, question: str,
         return question
     try:
         reply = client.generate(model, P.build_rewrite_prompt(question, history),
-                                {"temperature": 0, "num_predict": _reply_budget(model, 80),
+                                {"temperature": 0, "num_predict": _reply_budget(client, model, 80),
                                  "num_ctx": num_ctx})
     except OllamaError:
         return question
@@ -146,7 +146,7 @@ def grade_chunks(client: OllamaClient, model: str, question: str,
     for ch in chunks:
         try:
             reply = client.generate(model, P.build_grade_prompt(question, ch["text"]),
-                                    {"temperature": 0, "num_predict": _reply_budget(model, 3),
+                                    {"temperature": 0, "num_predict": _reply_budget(client, model, 3),
                                      "num_ctx": min(num_ctx, 2048)})
         except OllamaError:
             return chunks
@@ -156,9 +156,17 @@ def grade_chunks(client: OllamaClient, model: str, question: str,
     return kept or chunks
 
 
-def _reply_budget(model: str, short_reply: int) -> int:
-    """Reasoning models think before answering, so short replies need room."""
-    return 1024 if thinking._REASONING_NAME.search(model) else short_reply
+def _reply_budget(client: OllamaClient, model: str, short_reply: int) -> int:
+    """Reasoning models think before answering, so short replies need room.
+    Thinking counts against num_predict, so without room the reply comes back
+    empty (seen with gpt-oss, whose name gives no hint that it reasons)."""
+    if thinking._REASONING_NAME.search(model):
+        return 1024
+    try:
+        capabilities = client.show(model).get("capabilities") or []
+    except OllamaError:
+        capabilities = []
+    return 1024 if "thinking" in capabilities else short_reply
 
 
 def select(results: list[dict], top_k: int, min_score: float) -> list[dict]:
@@ -206,17 +214,29 @@ _BOILERPLATE_HEADINGS = re.compile(
     r"^\s*(references|bibliography|acknowledge?ments?|declaration of competing interest|"
     r"credit authorship contribution statement|author contributions?|data availability)\b", re.I)
 MAX_BROAD_DOCS = 12
-HEAD_SCAN = 12          # chunks searched for the abstract
-TAIL_SCAN = 200         # chunks (from the end) searched for the conclusion
+HEAD_SCAN = 16          # chunks searched for the abstract
+TAIL_SCAN = 200         # chunks (from the end) searched for conclusion, appendix, references
+MAX_SECTION = 8         # chunks taken from the abstract and from the conclusion
 
 # Section headings, as they appear in whitespace-normalised chunk text.
 _ABSTRACT = re.compile(r"\b(Abstract|ABSTRACT|A B S T R A C T)\b")
+_INTRO = re.compile(r"(?:^|[\s.])(?:1\.?\s+|I\.\s+)?(Introduction|INTRODUCTION)\s+(?=[A-Z])")
 _CONCLUSION = re.compile(
-    r"(?:^|[\s.])(?:\d+(?:\.\d+)*\.?\s+)?(Conclusions?|CONCLUSIONS?|Concluding [Rr]emarks|"
-    r"Summary and [Cc]onclusions?)(?:\s+and\s+[Ff]uture\s+\w+)?\s+(?=[A-Z])")
+    r"(?:^|[\s.])(?:\d+(?:\.\d+)*\.?\s+|[IVX]+\.\s+)?"
+    r"(Conclusions?|CONCLUSIONS?|Concluding [Rr]emarks|CONCLUDING REMARKS|"
+    r"Summary and [Cc]onclusions?|Discussion and [Cc]onclusions?)"
+    # "6. Conclusion, limitations and future work"
+    r"(?:[,:]?\s+(?:and|limitations|future|work|research|directions|outlook|perspectives|"
+    r"remarks|lessons|learned)\b,?)*"
+    r"\s+(?=[A-Z])")
+_APPENDIX = re.compile(r"\b(Appendix|APPENDIX)\s+[A-Z]\.?\s+(?=[A-Z][a-z])")
+_REFERENCES = re.compile(r"(?:^|\s)(References|REFERENCES|Bibliography|BIBLIOGRAPHY)\s+(?=\[\s?1\s?\]|1\.\s)")
+_ASKS_ABOUT_REFERENCES = re.compile(r"\b(reference|cite[sd]?|citation|bibliograph)", re.I)
 _FRONT_MATTER = re.compile(
     r"@|\buniversity\b|\bdepartment\b|\binstitute\b|\breceived\b|\baccepted\b|©|"
     r"\bdoi\b|journal homepage|\bissn\b|corresponding author|\bkeywords?\b|A R T I C L E", re.I)
+
+_LAYOUTS: dict = {}
 
 
 def is_broad(question: str) -> bool:
@@ -240,33 +260,77 @@ def is_front_matter(text: str) -> bool:
     return len({m.group(0).lower() for m in _FRONT_MATTER.finditer(text)}) >= 3
 
 
-def summary_chunks(corpus, key) -> list[dict]:
-    """A document's abstract and conclusion: where authors state their findings."""
+def doc_layout(corpus, key) -> dict:
+    """Where a document's abstract, conclusion, appendices and reference list are.
+    Positions are chunk ids; computed once per document version."""
     n = corpus.chunk_count(key)
+    head = corpus.chunk_range(key, 0, min(HEAD_SCAN, n)) if n > 0 else []
+    cache_key = (key, n, head[0]["text"][:80] if head else "")
+    if cache_key in _LAYOUTS:
+        return _LAYOUTS[cache_key]
+    layout = {"abstract": [], "conclusion": [], "appendix_start": None, "references_start": None}
     if n <= 0:
-        return []
-    head = corpus.chunk_range(key, 0, min(HEAD_SCAN, n))
-    abstract = []
+        return layout
+
+    # Abstract: from its heading up to (and including) the chunk where the
+    # introduction starts, so the results sentences at its end are included.
     for i, ch in enumerate(head):
         if _ABSTRACT.search(ch["text"]):
-            abstract = head[i:i + 3]
+            for c in head[i:i + MAX_SECTION]:
+                layout["abstract"].append(c)
+                if _INTRO.search(c["text"]):
+                    break
             break
-    if not abstract:                                  # no heading: first non-title-page chunks
-        abstract = [c for c in head[:4] if not is_front_matter(c["text"])][:2]
+    if not layout["abstract"]:                        # no heading: first non-title-page chunks
+        layout["abstract"] = [c for c in head[:6] if not is_front_matter(c["text"])][:3]
 
     tail_start = max(len(head), n - TAIL_SCAN)
     tail = corpus.chunk_range(key, tail_start, n) if tail_start < n else []
-    candidates = [c for c in head + tail if (c.get("chunk_id") or 0) >= n * 0.4]
-    conclusion = []
-    for i, ch in enumerate(candidates):
-        if _CONCLUSION.search(ch["text"]):
-            conclusion = [c for c in candidates[i:i + 2] if not is_boilerplate(c["text"])]
-            break
-    for ch in abstract:
-        ch["section"] = "abstract"
-    for ch in conclusion:
-        ch["section"] = "conclusion"
-    return abstract + conclusion
+    body = [c for c in head + tail if (c.get("chunk_id") or 0) >= n * 0.4]
+    for c in body:
+        cid = c.get("chunk_id") or 0
+        if layout["references_start"] is None and cid >= n * 0.5 and _REFERENCES.search(c["text"]):
+            layout["references_start"] = cid
+    conclusion_at = next((i for i, c in enumerate(body) if _CONCLUSION.search(c["text"])), None)
+    if conclusion_at is not None:
+        start_id = body[conclusion_at].get("chunk_id") or 0
+        for c in body[conclusion_at:]:
+            cid = c.get("chunk_id") or 0
+            if cid > start_id and _APPENDIX.search(c["text"]):
+                layout["appendix_start"] = cid
+                break
+        for c in body[conclusion_at:conclusion_at + MAX_SECTION]:
+            cid = c.get("chunk_id") or 0
+            if (is_boilerplate(c["text"]) or _APPENDIX.search(c["text"]) or
+                    (layout["references_start"] is not None and cid >= layout["references_start"])):
+                break
+            layout["conclusion"].append(c)
+    if layout["appendix_start"] is None:
+        layout["appendix_start"] = next(
+            (c.get("chunk_id") for c in body if (c.get("chunk_id") or 0) >= n * 0.5
+             and _APPENDIX.search(c["text"])), None)
+    _LAYOUTS[cache_key] = layout
+    return layout
+
+
+def in_back_matter(layout: dict, chunk_id, include_appendix: bool = True) -> bool:
+    """Is this chunk in the reference list (or, optionally, an appendix)?"""
+    if chunk_id is None:
+        return False
+    if layout["references_start"] is not None and chunk_id >= layout["references_start"]:
+        return True
+    return (include_appendix and layout["appendix_start"] is not None
+            and chunk_id >= layout["appendix_start"])
+
+
+def summary_chunks(corpus, key) -> list[dict]:
+    """A document's abstract and conclusion: where authors state their findings."""
+    layout = doc_layout(corpus, key)
+    out = []
+    for section in ("abstract", "conclusion"):
+        for ch in layout[section]:
+            out.append(dict(ch, section=section))
+    return out
 
 
 def broad_chunks(corpus, vector, settings: Settings, keys: list[str]) -> list[dict]:
@@ -277,9 +341,14 @@ def broad_chunks(corpus, vector, settings: Settings, keys: list[str]) -> list[di
     groups = []
     for key in keys:
         picked, seen = [], set()
+        layout = doc_layout(corpus, key)
         summary = summary_chunks(corpus, key)
-        for ch in summary + corpus.search(vector, matches + 6, key):
-            if ch["text"] in seen or is_boilerplate(ch["text"]) or is_front_matter(ch["text"]):
+        found = [h for h in corpus.search(vector, matches + 10, key)
+                 if not in_back_matter(layout, h.get("chunk_id"))]
+        for ch in summary + found:
+            if ch["text"] in seen or is_boilerplate(ch["text"]):
+                continue
+            if ch.get("section") != "abstract" and is_front_matter(ch["text"]):
                 continue
             seen.add(ch["text"])
             picked.append(ch)
@@ -290,6 +359,31 @@ def broad_chunks(corpus, vector, settings: Settings, keys: list[str]) -> list[di
     for i in range(max((len(g) for g in groups), default=0)):
         interleaved += [g[i] for g in groups if i < len(g)]
     return interleaved
+
+
+def merge_overlapping(first: str, second: str) -> str:
+    """Join two consecutive chunks, dropping the text they share (chunks overlap)."""
+    for k in range(min(len(second), 300), 15, -1):
+        if first.endswith(second[:k]):
+            return first + second[k:]
+    return first + " " + second
+
+
+def with_following_text(corpus, chunks: list[dict]) -> list[dict]:
+    """Extend each passage with the chunk after it. Chunks are short, so a passage
+    often stops just before the detail that answers the question ("…we adopt
+    three datasets." with the names in the next chunk)."""
+    texts = {c["text"] for c in chunks}
+    out = []
+    for c in chunks:
+        key, cid = c.get("key"), c.get("chunk_id")
+        if key is not None and cid is not None:
+            nxt = corpus.chunk_range(key, cid + 1, cid + 2)
+            if nxt and nxt[0]["text"] not in texts and not is_boilerplate(nxt[0]["text"]) \
+                    and not in_back_matter(doc_layout(corpus, key), cid + 1, include_appendix=False):
+                c = dict(c, text=merge_overlapping(c["text"], nxt[0]["text"]))
+        out.append(c)
+    return out
 
 
 def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
@@ -331,7 +425,13 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
             if r["text"] not in merged or r["score"] > merged[r["text"]]["score"]:
                 merged[r["text"]] = r
         results = list(merged.values())
+    if corpus is not None and not _ASKS_ABOUT_REFERENCES.search(question):
+        # Reference lists match many questions on wording alone ("FWOS" came from one).
+        results = [r for r in results if r.get("key") is None or not in_back_matter(
+            doc_layout(corpus, r["key"]), r.get("chunk_id"), include_appendix=False)]
     chunks = select(results, settings.top_k, settings.min_score)
+    if corpus is not None:
+        chunks = with_following_text(corpus, chunks)
     if settings.grade_chunks and chunks:
         chunks = grade_chunks(client, model, search_query, chunks, num_ctx)
     text, used, turns = P.build_prompt(question, chunks, history, num_ctx,

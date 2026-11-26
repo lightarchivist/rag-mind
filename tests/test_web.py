@@ -211,3 +211,13 @@ def test_reasoning_model_thinking_is_hidden(web, ollama):
     head, answer = chat(web, "battery?", model="hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF")
     assert head["thinking"] is True
     assert answer == "The battery lasts 14 hours."
+
+
+def test_sources_numbered_with_passages_and_single_document_filter(web, ollama):
+    upload(web, "a.txt", BOOK); index(web, "a.txt")
+    upload(web, "b.txt", "Abstract. SDN and AI for industrial IoT networks. " * 30); index(web, "b.txt")
+    head, _ = chat(web, "What is the battery life?")
+    assert len(head["passages"]) == len(head["sources"])
+    assert all(p["text"] and p["cite"] == s for p, s in zip(head["passages"], head["sources"]))
+    head, _ = chat(web, "summarise the documents", filter_source="b.txt")
+    assert "documents" not in head and all(s.startswith("b.txt") for s in head["sources"])

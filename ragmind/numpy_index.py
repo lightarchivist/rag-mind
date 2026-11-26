@@ -117,7 +117,9 @@ class NumpyIndex:
         scores = matrix @ q / np.where(norms == 0, 1e-10, norms)
         top = np.argsort(scores)[::-1][:n]
         return [{"text": self.documents[rows[i]], "source": self.metadatas[rows[i]]["source"],
-                 "page": self.metadatas[rows[i]].get("page"), "score": float(scores[i])}
+                 "page": self.metadatas[rows[i]].get("page"), "score": float(scores[i]),
+                 "key": self.metadatas[rows[i]]["source"],
+                 "chunk_id": self.metadatas[rows[i]].get("chunk_id")}
                 for i in top]
 
 

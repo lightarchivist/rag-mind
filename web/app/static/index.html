@@ -205,7 +205,13 @@
   .msg.user .msg-bubble { background: var(--accent-strong); color: var(--on-accent); border-radius: 12px 2px 12px 12px; display: inline-block; float: right; max-width: 85%; }
   .msg.assistant .msg-bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 2px 12px 12px 12px; clear: both; }
   .msg-sources { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; clear: both; }
-  .source-tag { font-family: var(--mono); font-size: 10px; padding: 2px 8px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); border-radius: 4px; }
+  .source-tag { font-family: var(--mono); font-size: 10px; padding: 2px 8px; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); border-radius: 4px; cursor: pointer; }
+  .source-tag:hover, .source-tag.open { border-color: var(--accent); }
+  .source-tag b { font-weight: 700; margin-right: 2px; }
+  .source-passage { flex-basis: 100%; font-size: 12px; line-height: 1.6; color: var(--text2);
+    background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 8px 12px; white-space: pre-wrap; }
+  .source-passage .src-head { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-bottom: 4px; }
   .typing { display: flex; gap: 4px; align-items: center; padding: 10px 14px; }
   .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce .8s infinite; }
   .typing span:nth-child(2) { animation-delay: .15s; }
@@ -893,6 +899,42 @@ async function updateBadges() {
 // ── Chat ──────────────────────────────────────────────────────────────────────
 function hideWelcome() { const w = document.getElementById('welcome'); if (w) w.remove(); }
 
+// Numbered source tags, in the same order as the passages the model saw, so
+// "[2]" in an answer is tag [2]. Clicking a tag shows that passage's text.
+function renderSources(div, header) {
+  const passages = (header && header.passages) || [];
+  const cites = passages.length ? passages.map(p => p.cite) : ((header && header.sources) || []);
+  div.innerHTML = '';
+  cites.forEach((cite, i) => {
+    const tag = document.createElement('span');
+    tag.className = 'source-tag';
+    tag.innerHTML = `<b>[${i + 1}]</b> ${esc(cite)}`;
+    if (passages[i]) {
+      tag.title = 'Show this passage';
+      tag.onclick = () => togglePassage(div, tag, i + 1, passages[i]);
+    }
+    div.appendChild(tag);
+  });
+}
+
+function togglePassage(div, tag, n, passage) {
+  const open = div.querySelector('.source-passage');
+  const wasThis = open && open.dataset.n === String(n);
+  if (open) open.remove();
+  div.querySelectorAll('.source-tag.open').forEach(t => t.classList.remove('open'));
+  if (wasThis) return;
+  const box = document.createElement('div');
+  box.className = 'source-passage';
+  box.dataset.n = String(n);
+  const head = document.createElement('div');
+  head.className = 'src-head';
+  head.textContent = `[${n}] ${passage.cite}${passage.section ? ' · ' + passage.section : ''}`;
+  box.appendChild(head);
+  box.appendChild(document.createTextNode(passage.text));
+  div.appendChild(box);
+  tag.classList.add('open');
+}
+
 async function sendMessage() {
   if (streaming) return;
   const input = document.getElementById('input');
@@ -993,8 +1035,10 @@ async function sendMessage() {
     // A plain message without a header line (e.g. "No documents indexed yet").
     if (!headerDone) { openBubble(); answer = buffer; bubble.textContent = answer; }
 
-    if (sources.length && sourceDiv) {
-      sourceDiv.innerHTML = sources.map(s=>`<span class="source-tag">📄 ${esc(s)}</span>`).join('');
+    // A "not found" answer gets no source tags: the passages didn't contain it.
+    const notFound = /^\s*this information is not found in the indexed documents/i.test(answer);
+    if (sources.length && sourceDiv && !notFound) {
+      renderSources(sourceDiv, header);
     }
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const endTimeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});

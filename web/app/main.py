@@ -312,11 +312,16 @@ def list_models():
 
 
 class IndexCorpus:
-    """The web index seen as a set of documents (for broad questions)."""
+    """The web index seen as a set of documents. With `only`, it is limited to one
+    document (the CONTEXT menu), which also turns off broad questions."""
+
+    def __init__(self, only: str = ""):
+        self.only = only
 
     def keys(self):
         with index_lock:
-            return sorted(get_index().sources())
+            sources = sorted(get_index().sources())
+        return [self.only] if self.only in sources else ([] if self.only else sources)
 
     def search(self, vector, n, key=None):
         with index_lock:
@@ -353,13 +358,16 @@ def chat_stream(req: ChatRequest):
         history = [h for h in req.history if isinstance(h, dict)]
         # Broad questions ("compare the documents") draw on every document,
         # unless the user limited the chat to one document.
-        corpus = None if req.filter_source else IndexCorpus()
+        corpus = IndexCorpus(only=req.filter_source)
         prepared = pipeline.prepare(ollama, settings, model.name, req.question, history, search,
                                     corpus=corpus)
     except OllamaError as e:
         raise http_error(e)
 
-    header = {"sources": list(dict.fromkeys(cite(ch) for ch in prepared.chunks)),
+    # Numbered in prompt order, so "[2]" in an answer is the second source tag.
+    header = {"sources": [cite(ch) for ch in prepared.chunks],
+              "passages": [{"cite": cite(ch), "section": ch.get("section", ""), "text": ch["text"]}
+                           for ch in prepared.chunks],
               "model": short(model.name)}
     if prepared.search_query != req.question:
         header["search_query"] = prepared.search_query

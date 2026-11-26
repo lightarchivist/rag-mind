@@ -209,7 +209,8 @@ class ChromaStore:
         res = self.col.query(query_embeddings=[vector], n_results=n, where=where,
                              include=["documents", "metadatas", "distances"])
         return [{"text": doc, "source": meta.get("source", "?"), "page": meta.get("page"),
-                 "score": 1 - dist}
+                 "score": 1 - dist, "key": meta.get("path") or meta.get("source"),
+                 "chunk_id": meta.get("chunk_id")}
                 for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0])]
 
     # ── corpus interface for broad questions (see pipeline.prepare) ──
@@ -510,8 +511,10 @@ def answer_question(store, ollama, settings, model: ModelInfo, question, history
         docs = len({ch["source"] for ch in prepared.chunks})
         print(c(DIM, f"  (question about the documents as a whole: passages from all {docs})"))
     if prepared.chunks:
-        cited = list(dict.fromkeys(cite(ch) for ch in prepared.chunks))
-        print(c(DIM, f"  [{'; '.join(cited)}] — {len(prepared.chunks)} passages"))
+        # Numbered like the passages the model saw, so "[2]" in an answer is source 2.
+        for i, ch in enumerate(prepared.chunks, 1):
+            section = f" ({ch['section']})" if ch.get("section") else ""
+            print(c(DIM, f"  [{i}] {cite(ch)}{section}"))
     else:
         print(c(DIM, "  No passages matched closely; the model will say if it can't answer."))
 

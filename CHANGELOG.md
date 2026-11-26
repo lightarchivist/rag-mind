@@ -5,6 +5,25 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [2.2.0] - 2026-11-26
+
+Based on a 14-question test of two models against two real papers, with every quoted number checked against the papers.
+
+### Added
+- Numbered source tags that match the [1], [2]… citations in answers. Click a tag in the web app to read the passage the model was given; the CLI lists sources by number.
+- Answers that say "not found in the indexed documents" no longer show source tags.
+
+### Changed
+- Summaries use each paper's whole abstract (up to the introduction), so the results it reports are included, and up to eight chunks of its conclusion.
+- Appendices and reference lists are left out of summaries and comparisons, and reference lists are left out of other answers unless the question asks about references.
+- Each retrieved passage is extended with the text that follows it, so details that continue past a chunk boundary are kept.
+- New rules for the model: cite passages by number, name every item when asked "which…", say which table row a number comes from, check the question's assumptions, and keep the authors' own work apart from work they cite.
+
+### Fixed
+- Conclusions headed like "6. Conclusion, limitations and future work" were not recognised.
+- Follow-up questions were not rewritten for gpt-oss (and other models that think before answering), so searches like "who are the authors of the SDN paper?" missed the title page.
+- Limiting the web chat to one document (CONTEXT) turned off some retrieval improvements.
+
 ## [2.1.0] - 2026-11-26
 
 ### Changed

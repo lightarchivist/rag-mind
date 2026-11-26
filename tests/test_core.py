@@ -547,3 +547,87 @@ def test_history_only_for_followups(ollama):
     ollama.answers = ["What are the limitations of the framework?"]
     follow = pipeline.prepare(client, Settings(), "llama3", "and its limitations?", history, lambda v, n: [])
     assert "CONVERSATION SO FAR" in follow.prompt
+
+
+# ── 2.2: document layout, back matter, following text ─────────────────────────
+def structured_paper():
+    """Laid out like the Hierarchical paper (chunk by chunk)."""
+    c = ["Journal title page. a University of Naples. E-mail: x@unina.it. Received 2025. doi 10.1/x",
+         "Keywords Network security Agentic AI A B S T R A C T Cyber-physical systems need security.",
+         "This paper proposes a hierarchical multi-agent framework.",
+         "Specialized agents analyse data; supervisors aggregate findings.",
+         "The framework is evaluated using four LLMs across three datasets (PicoDomain, CERT r5.2, and SWaT),",
+         "reaching an accuracy of 90.18% on PicoDomain and 96.97% on SWaT.",
+         "and a foundation for AI security. 1. Introduction Cyber-physical systems are everywhere."]
+    c += [f"Method details part {i}, see Appendix A.2 for the prompts." for i in range(7, 40)]
+    c += ["Earlier results. 6. Conclusion, limitations and future work This work introduced a framework.",
+          "Table 6 Agreement 0.41 0.29 0.47 0.52 0.61 0.38 0.64 0.71",
+          "Experiments across three datasets show perfect recall for models of 8B and above.",
+          "Limitations include prompt injection risks.",
+          "CRediT authorship contribution statement A: Conceptualization, Data curation, Funding acquisition.",
+          "Appendix A. Agent prompts This appendix lists the round-table prompt in full.",
+          "You are a subsystem supervisor. Share your assessment in the round-table discussion.",
+          "References [1] A. Smith, FWOS scheduling for TSN, 2021. [2] B. Lee, Agents, 2023.",
+          "[3] C. Wu, Round-table deliberation in security systems, 2022."]
+    return c
+
+
+def test_layout_finds_whole_abstract_conclusion_appendix_and_references():
+    corpus = FakeCorpus({"p.pdf": structured_paper()})
+    lay = pipeline.doc_layout(corpus, "p.pdf")
+    assert [c["chunk_id"] for c in lay["abstract"]] == [1, 2, 3, 4, 5, 6]   # up to the introduction
+    assert "96.97% on SWaT" in " ".join(c["text"] for c in lay["abstract"])
+    concl = " ".join(c["text"] for c in lay["conclusion"])
+    assert "This work introduced" in concl and "perfect recall" in concl and "CRediT" not in concl
+    assert lay["appendix_start"] == 45          # the heading, not the early "see Appendix A.2"
+    assert lay["references_start"] == 47
+
+
+def test_broad_questions_skip_appendix_and_references(ollama):
+    paper = structured_paper()
+    corpus = FakeCorpus({"a.pdf": paper, "b.pdf": paper[:40] + ["7. Conclusion Results for b."]})
+    corpus.search = lambda v, n, key=None: [
+        {"text": t, "source": key, "page": 1, "score": 0.9, "key": key, "chunk_id": i}
+        for i, t in enumerate(corpus.docs[key]) if "round-table" in t or "FWOS" in t][:n]
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3", "Summarise the key findings", [],
+                         lambda v, n: [], corpus=corpus)
+    texts = " ".join(c["text"] for c in p.chunks)
+    assert "96.97% on SWaT" in texts and "perfect recall" in texts
+    assert "You are a subsystem supervisor" not in texts and "FWOS" not in texts
+
+
+def test_normal_questions_skip_reference_list_and_extend_passages(ollama):
+    paper = structured_paper()
+    corpus = FakeCorpus({"a.pdf": paper})
+    hits = lambda v, n: [
+        {"text": paper[i], "source": "a.pdf", "page": 1, "score": 0.9 - i / 1000, "key": "a.pdf", "chunk_id": i}
+        for i in (47, 4)]
+    client = OllamaClient(ollama.url)
+    p = pipeline.prepare(client, Settings(), "llama3", "How is TSN scheduling improved?", [], hits, corpus=corpus)
+    texts = [c["text"] for c in p.chunks]
+    assert not any("FWOS" in t for t in texts)                     # reference list left out
+    assert any("PicoDomain" in t and "96.97% on SWaT" in t for t in texts)   # chunk 4 + chunk 5
+    p = pipeline.prepare(client, Settings(), "llama3", "Which references are cited about TSN?", [],
+                         hits, corpus=corpus)
+    assert any("FWOS" in c["text"] for c in p.chunks)              # unless asked for
+
+
+def test_merge_overlapping_chunks():
+    assert pipeline.merge_overlapping("we adopt three datasets. We first", "datasets. We first evaluate X") \
+        == "we adopt three datasets. We first evaluate X"
+    assert pipeline.merge_overlapping("abc", "xyz") == "abc xyz"
+
+
+def test_rewrite_gets_room_for_models_that_think(ollama):
+    ollama.models.append({"name": "gpt-oss:20b", "family": "gptoss", "parameter_size": "20.9B",
+                          "capabilities": ["completion", "thinking"], "context_length": 131072, "size": 1})
+    ollama.answers = ["What is the weight of the UltraBook Pro 14?"]
+    pipeline.rewrite_followup(OllamaClient(ollama.url), "gpt-oss:20b", "and its weight?",
+                              [{"q": "Tell me about the UltraBook Pro 14", "a": "A laptop."}], 4096)
+    assert ollama.calls("/api/generate")[-1]["options"]["num_predict"] == 1024
+
+
+def test_prompt_rules_and_numbered_passages():
+    prompt, _, _ = build_prompt("Q?", [chunk(1), chunk(2)], [], 8192)
+    assert "[2]" in prompt and "name every one" in prompt and "Ref. [89]" in prompt
+    assert "Check the question's assumptions" in prompt
