@@ -204,7 +204,8 @@ two from each, and the answer names the sections.
 "And how did the smallest model compare?" or "Explain the second step in more
 detail". RagMind rewrites the follow-up into a complete question, searches for
 it, also looks for the passages the previous answer was based on, and gives the
-model both your question and the rewritten one. The rewritten question is shown
+model both your question and the rewritten one. "The second step" or "the last
+point" is taken from the numbered or bulleted list in the previous answer. The rewritten question is shown
 under the answer as *searched for: …*. If that line shows a misunderstanding,
 ask the full question instead.
 

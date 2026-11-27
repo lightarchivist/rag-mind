@@ -358,7 +358,11 @@ def test_names_are_taken_out_of_searches_inside_named_documents():
               "fenwick.pdf": "Trust-Weighted Lattice Agents: A Hybrid Framework for Calm Networks"}
     q = "How do the quiet meadows paper and the Trust-Weighted paper differ in how they guard against drift?"
     assert pipeline.without_names(q, titles) == "How do and differ in how they guard against drift?"
-    assert pipeline.without_names("What gain did the quiet meadows study use?", titles) == "What gain did use?"
+    assert pipeline.without_names("What gain and offset did the quiet meadows study use for calibration?",
+                                  titles) == "What gain and offset did use for calibration?"
+    # Too little topic left without the name ("What gain did use?"): unchanged.
+    assert pipeline.without_names("What gain did the quiet meadows study use?", titles) == \
+        "What gain did the quiet meadows study use?"
     # Too little left: search with the question as it is.
     assert pipeline.without_names("Who wrote the Trust-Weighted paper?", titles) == "Who wrote the Trust-Weighted paper?"
     assert pipeline.without_names("What does TI-LFA provide?", titles) == "What does TI-LFA provide?"
@@ -387,3 +391,59 @@ def test_a_rewritten_follow_up_is_shown_to_the_model_in_full():
                            "Explain the step of adjusting confidence levels)\nAssistant:")
     plain, _, _ = build_prompt("What is LDP?", [], [], 8192, resolved="What is LDP?")
     assert plain.endswith("User: What is LDP?\nAssistant:")
+
+
+# ── 3.0.5: list-item follow-ups, keyword order inside named documents ─────────
+
+STEPS = ("The protocol has three steps:\n\n1. **Record the drift** in the log.\n"
+         "2. **Lower the gain** when two relays disagree. [1]\n   (sub-note on gain)\n"
+         "3. Flag the relay for review.\n\nThat is all. [2]")
+
+
+@pytest.mark.parametrize("question, item", [
+    ("Explain the second step in more detail", "Lower the gain when two relays disagree"),
+    ("What about the last point?", "Flag the relay for review"),
+    ("Tell me more about the first one", "Record the drift in the log"),
+    ("Explain the second step in the list", "Lower the gain when two relays disagree"),
+])
+def test_an_ordinal_follow_up_is_read_from_the_previous_answer(question, item):
+    assert f'("{item}")' in pipeline.resolve_ordinal(question, STEPS)
+
+
+@pytest.mark.parametrize("question, answer", [
+    ("What is the second step of the relay calibration?", STEPS),     # names its own subject
+    ("Explain the fourth step", STEPS),                              # the list is shorter
+    ("Explain the second step", "Prose only: record, lower, then flag."),
+    ("What is the gain?", STEPS),
+])
+def test_ordinals_that_cannot_be_read_from_the_answer(question, answer):
+    assert pipeline.resolve_ordinal(question, answer) is None
+
+
+def test_an_ordinal_follow_up_needs_no_rewrite_by_the_model(ollama):
+    corpus = Corpus({"a.pdf": [("", "Lowering the gain when relays disagree keeps the lattice calm.")],
+                     "b.pdf": [("", "Other.")]})
+    before = len(ollama.calls("/api/generate"))
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(keyword_search=False), "llama3",
+                         "Explain the second step in more detail", [{"q": "What are the steps?", "a": STEPS}],
+                         lambda v, n: corpus.search(v, n), corpus=corpus)
+    assert "Lower the gain when two relays disagree" in p.search_query
+    assert len(ollama.calls("/api/generate")) == before          # no rewrite call
+    assert "this asks: Explain the second step (\"Lower the gain" in p.prompt
+
+
+def test_names_stay_when_little_else_is_left():
+    titles = {"q.pdf": "Lattice Routing for Quiet Meadows", "h.pdf": "Harbor Security Notes"}
+    assert pipeline.without_names("How was the quiet meadows study set up?", titles) == \
+        "How was the quiet meadows study set up?"
+
+
+def test_inside_a_named_document_keyword_matches_do_not_jump_the_queue():
+    sim = [{"text": t, "score": s} for t, s in [("chunking", 0.80), ("settings", 0.78), ("other", 0.70)]]
+    words = [{"text": "settings", "score": None}, {"text": "glossary", "score": None},
+             {"text": "index", "score": None}]
+    assert [r["text"] for r in pipeline.fuse_within(sim, words, 2, 0.25)] == ["chunking", "settings", "glossary", "index"]
+    assert [r["text"] for r in pipeline.fuse_within(sim, words, 2, 0.25, extra=1)] == ["chunking", "settings", "glossary"]
+    assert [r["text"] for r in pipeline.fuse_within(sim[:1], words, 3, 0.25, extra=0)] == ["chunking", "settings", "glossary"]
+    # Across the library, keyword matches still come first (unchanged).
+    assert [r["text"] for r in pipeline.fuse(sim, words, 2, 0.25)][0] == "settings"

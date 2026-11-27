@@ -151,6 +151,62 @@ def looks_like_followup(question: str, one_document: bool = False) -> bool:
     return len(q.split()) <= 5
 
 
+# "Explain the second step": the second item of the list in the previous answer.
+# Not "the second step of the TI-LFA computation", which names its own subject.
+_ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7,
+             "eighth": 8, "ninth": 9, "tenth": 10, "1st": 1, "2nd": 2, "3rd": 3, "4th": 4, "5th": 5, "last": -1}
+_ORDINAL_REF = re.compile(
+    r"\b(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|1st|2nd|3rd|4th|5th|last)\s+"
+    r"(?:step|point|item|one|part|reason|stage|phase|option|bullet|thing|factor|challenge|limitation|finding)s?\b"
+    r"(?!\s+(?:of|in|for|from|on|during|within)\s+(?:the\s+)?"
+    r"(?!the\b|more\b|detail|it\b|them\b|that\b|this\b|these\b|those\b|your\b|list\b|answer\b|above\b)[^\W\d_])",
+    re.I)
+_LIST_ITEM = re.compile(r"^(\s*)(?:\d{1,2}[.)]|[-*•+])\s+(.*\S)")
+
+
+def _answer_lists(answer: str) -> list[list[str]]:
+    """The top-level lists of an answer, each as its items' text."""
+    lists, items, indent = [], [], 0
+    for line in answer.splitlines():
+        m = _LIST_ITEM.match(line)
+        if m:
+            depth = len(m.group(1).expandtabs())
+            if items and depth > indent:
+                continue                           # a sub-item belongs to its item
+            if items and depth < indent:
+                lists.append(items)
+                items = []
+            if not items:
+                indent = depth
+            items.append(m.group(2))
+        elif not line.strip() or (items and line[:1] in " \t"):
+            continue                               # blank line or an item's next line
+        elif items:
+            lists.append(items)
+            items = []
+    if items:
+        lists.append(items)
+    return lists
+
+
+def resolve_ordinal(question: str, answer: str) -> str | None:
+    """"Explain the second step" → 'Explain the second step ("Adjust confidence
+    when evidence conflicts")', from the previous answer's list. None when the
+    question has no such reference or the answer has no list long enough."""
+    m = _ORDINAL_REF.search(question)
+    if not m:
+        return None
+    n = _ORDINALS[m.group(1).lower()]
+    for items in _answer_lists(answer):
+        if len(items) >= max(n, 2):
+            text = re.sub(r"\[\d+(?:[,\s\-–]*\d+)*\]|[*_`]", "", items[n - 1] if n > 0 else items[-1])
+            words = text.split()
+            item = " ".join(words[:20]).rstrip(" .,;:–-")
+            if item:
+                return f'{question[:m.end()]} ("{item}"){question[m.end():]}'
+    return None
+
+
 def rewrite_followup(client: OllamaClient, model: str, question: str,
                      history: list[dict], num_ctx: int) -> str:
     """Turn a follow-up ("what about the second one?") into a standalone search query.
@@ -268,6 +324,20 @@ def fuse(similar: list[dict], keyword: list[dict], top_k: int, min_score: float)
     chosen += similar_only[:room - extra]
     chosen += keyword_only[:top_k - len(chosen)]
     return chosen
+
+
+def fuse_within(similar: list[dict], keyword: list[dict], top_k: int, min_score: float,
+                extra: int = MAX_KEYWORD_ONLY) -> list[dict]:
+    """Like fuse, for a search inside one named document: the similarity order
+    stays as it is, and keyword search adds up to `extra` passages that the
+    similarity search missed, after them. (Inside one document, putting keyword
+    matches first lets one part of "How was X chunked, and which settings…"
+    push out the passage on the other part.)"""
+    ranked = [r for r in sorted(similar, key=lambda r: r["score"], reverse=True)
+              if r["score"] >= min_score][:top_k]
+    found = {r["text"] for r in ranked}
+    missed = [r for r in keyword if r["text"] not in found]
+    return ranked + missed[:extra + top_k - len(ranked)]
 
 
 @dataclass
@@ -711,7 +781,8 @@ _NOT_NAMING = {"whole", "entire", "proposed", "same", "other", "first", "second"
                "every", "your", "my", "our", "its", "their", "this", "that", "these", "those",
                "current", "indexed", "uploaded", "given", "following", "main", "overall", "full",
                "cited", "related"}
-MAX_NAMED = 4           # a phrase matching more documents than this doesn't name one
+MAX_NAMED = 4
+MIN_TOPIC_WORDS = 3     # content words a question needs without the names, to search by them           # a phrase matching more documents than this doesn't name one
 
 
 def _name_words(text: str) -> set[str]:
@@ -777,8 +848,11 @@ def without_names(question: str, titles: dict[str, str]) -> str:
             last = end
     parts.append(question[last:])
     topic = " ".join("".join(parts).split())
-    # Keep the question as it is if hardly anything is left ("Summarise the SDN paper").
-    return topic if len(re.findall(r"[^\W\d_]{3,}", topic)) >= 3 else question
+    # Keep the question as it is if the name was most of it: "How was the
+    # design-education study set up?" leaves "How was set up?".
+    from .keyword import STOPWORDS
+    content = {w for w in re.findall(r"[^\W\d_]{3,}", topic.lower()) if w not in STOPWORDS}
+    return topic if len(content) >= MIN_TOPIC_WORDS else question
 
 
 def title_page_chunks(corpus, key) -> list[dict]:
@@ -906,7 +980,8 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
         history = []
     search_query = question
     if history and settings.rewrite_followups and not is_broad(question):
-        search_query = rewrite_followup(client, model, question, history, num_ctx)
+        search_query = (resolve_ordinal(question, history[-1]["a"])
+                        or rewrite_followup(client, model, question, history, num_ctx))
     vector = embed_query(client, settings, search_query)
 
     titles = corpus_titles(corpus) if len(keys) >= 2 else {}
@@ -976,8 +1051,13 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
         words = outside_reference_lists(keyword(pool, key))
         first_results += results
         want = each * 2 if breadth else each
-        found = fuse(results, words, want, settings.min_score) if hybrid else \
-            select(results, want, settings.min_score)
+        if not hybrid:
+            found = select(results, want, settings.min_score)
+        elif key is None:
+            found = fuse(results, words, want, settings.min_score)
+        else:
+            found = fuse_within(results, words, want, settings.min_score,
+                                MAX_KEYWORD_ONLY if len(scopes) == 1 else 1)
         if breadth:
             found = spread(found, each)
         if answer_vector is not None:

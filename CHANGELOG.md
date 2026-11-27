@@ -5,6 +5,13 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.5] - 2026-11-27
+
+### Fixed
+- "How was the design-education study set up?" was searched as "How was set up?" once the document's name was taken out. The name now stays when too little of the question is left without it.
+- Inside a named document, passages that matched the question's words were put before those that matched its meaning, so for "How was X chunked, and which retrieval settings…" the settings passages pushed out the one on chunking. Inside a named document the order now follows meaning, and word matches are added after.
+- "Explain the second step" is now read from the list in the previous answer ("the second step" → its second item), instead of depending on the model to rewrite it. The model only rewrites follow-ups that this doesn't cover.
+
 ## [3.0.4] - 2026-11-27
 
 ### Fixed
