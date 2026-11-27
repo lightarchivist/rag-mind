@@ -937,7 +937,8 @@ def test_many_passages_found_by_both_still_leave_room_for_the_best_match():
     sim = [{"text": f"similar {i}", "score": 0.9 - i / 100} for i in range(12)]
     kw = [{"text": f"similar {i}", "score": None} for i in range(1, 9)]
     out = [c["text"] for c in pipeline.fuse(sim, kw, 6, 0.25)]
-    assert out == ["similar 1", "similar 2", "similar 3", "similar 4", "similar 5", "similar 0"]
+    assert out[:6] == ["similar 1", "similar 2", "similar 3", "similar 4", "similar 5", "similar 0"]
+    assert out[6:] == ["similar 6"]           # one more agreed passage, added after the six
 
 
 def test_prepare_uses_keyword_search_when_the_corpus_has_it(ollama):

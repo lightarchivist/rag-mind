@@ -304,27 +304,37 @@ def select(results: list[dict], top_k: int, min_score: float) -> list[dict]:
 
 
 MAX_KEYWORD_ONLY = 2    # passages that keyword search may add to the similarity results
+MAX_AGREED_DEEPER = 1   # passages both searches found only further down, added too
 
 
 def fuse(similar: list[dict], keyword: list[dict], top_k: int, min_score: float) -> list[dict]:
     """Combine similarity and keyword results. Similarity results stay the basis:
-    `top_k` of them, those keyword search found too first, and never without
-    the best one. Keyword search then adds at most MAX_KEYWORD_ONLY passages
-    that the similarity search missed (more only if similarity found too few).
-    It adds them rather than taking the places of similarity results: the
-    passage that answers a question can be found by meaning alone, while
-    keyword search finds others that only share its words."""
+    `top_k` of them, never without the best one, and first those that keyword
+    search also ranks near the top (within 2 x top_k of both lists). Then come
+    additions: MAX_AGREED_DEEPER passages that both searches found further
+    down their lists (best keyword match first), and at most MAX_KEYWORD_ONLY
+    that only keyword search found (more only if similarity found too few).
+    Additions don't take the places of similarity results: the passage that
+    answers a question can be found by meaning alone, while keyword search
+    finds others that only share its words, and agreement far down both lists
+    is weak evidence. It still counts when the best matches by meaning are
+    from the wrong document."""
     ranked = [r for r in sorted(similar, key=lambda r: r["score"], reverse=True)
               if r["score"] >= min_score]
+    near = 2 * top_k
+    keyword_rank = {}
+    for i, r in enumerate(keyword):
+        keyword_rank.setdefault(r["text"], i)
     found = {r["text"] for r in ranked}
-    words = {r["text"] for r in keyword}
-    both = [r for r in ranked if r["text"] in words]
-    similar_only = [r for r in ranked if r["text"] not in words]
-    keyword_only = [r for r in keyword if r["text"] not in found]
-    chosen = (both + similar_only)[:top_k]
+    both = [r for r in ranked[:near] if keyword_rank.get(r["text"], near) < near]
+    chosen = (both + [r for r in ranked if r not in both])[:top_k]
     if ranked and ranked[0] not in chosen:      # many agreed passages: keep the best match too
         chosen[-1] = ranked[0]
-    return chosen + keyword_only[:max(MAX_KEYWORD_ONLY, top_k - len(chosen))]
+    deeper = sorted((r for r in ranked if r["text"] in keyword_rank and r not in chosen),
+                    key=lambda r: keyword_rank[r["text"]])
+    keyword_only = [r for r in keyword if r["text"] not in found]
+    return (chosen + deeper[:MAX_AGREED_DEEPER]
+            + keyword_only[:max(MAX_KEYWORD_ONLY, top_k - len(chosen))])
 
 
 def fuse_within(similar: list[dict], keyword: list[dict], top_k: int, min_score: float,
@@ -1011,8 +1021,8 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
     top_k = settings.top_k + (BREADTH_EXTRA if breadth else 0)
     scopes = named or [None]
     each = top_k if len(scopes) == 1 else max(3, math.ceil((top_k + 2) / len(scopes)))
-    # Both searches look three times deeper than the passages kept: a passage
-    # ranked 15th by meaning and 4th by its words is one they agree on.
+    # Both searches look three times deeper than the passages kept, so fuse can
+    # add a passage they agree on further down (15th by meaning, 4th by words).
     pool = each * (3 if breadth or hybrid else 1)
     embedded = {search_query: vector}
 

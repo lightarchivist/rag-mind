@@ -5,6 +5,11 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.9] - 2026-11-27
+
+### Fixed
+- 3.0.8 put passages that both searches found far down their lists (below their top 12) first. They could take all six places and push out the passages that matched the question best by meaning: a question about response times lost the passage with the timings. Passages both searches rank in their top 12 come first again, as in 3.0.7. One passage they both found further down is added after the six, next to keyword search's two, so an answer can draw on up to nine passages.
+
 ## [3.0.8] - 2026-11-27
 
 ### Fixed
