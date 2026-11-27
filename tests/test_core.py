@@ -156,6 +156,28 @@ def test_split_capitals_leave_variables_alone(tmp_path):
     assert "Table 1 shows To be Very clear and Teachers agree." in out and report["split_words"] == 16
 
 
+def test_watermark_name_wrapped_onto_the_next_line(tmp_path):
+    # "From the Library of Quinn" ends the line and "Harbor" starts the next one,
+    # above a running header that changes from page to page: the whole name goes.
+    pages = []
+    for i in range(20):
+        header = f"Chapter {i}: Labels {500 + i}" if i % 2 else f"{500 + i} Cisco Guide"
+        pages.append(f"Page {i} text about MPLS.\nFrom the Library of Quinn\nHarbor\n{header}\nBody {i}.\n")
+    report = {}
+    [(_, out)] = extract_pages(write(tmp_path / "book.txt", "".join(pages)), report)
+    assert "Quinn" not in out and "Harbor" not in out and report["watermarks"] == 20
+    assert "Chapter 7: Labels 507" in out and "508 Cisco Guide" in out and "Body 9." in out
+
+
+def test_a_word_that_often_follows_the_watermark_is_not_taken_for_a_name(tmp_path):
+    # The line after a one-word name starts with "Chapter" on every page, but
+    # "Chapter" also appears in the text: it is a header, not the rest of a name.
+    pages = "".join(f"See Chapter {i} for more.\nFrom the Library of Quinn\nChapter {i}: Labels\nBody {i}.\n"
+                    for i in range(20))
+    [(_, out)] = extract_pages(write(tmp_path / "book.txt", pages))
+    assert "Quinn" not in out and out.count("Chapter") == 40
+
+
 def test_watermark_names_with_accents_and_particles(tmp_path):
     pages = "".join(f"Page {i} about MPLS.\nFrom the Library of Jos\u00e9 van der Berg\nBody {i}.\n"
                     for i in range(12))
@@ -904,11 +926,18 @@ def test_keyword_hits_add_to_similarity_results_but_never_push_out_the_best():
     kw = [{"text": f"keyword {i}", "score": None} for i in range(5)] + [{"text": "similar 1", "score": None}]
     out = [c["text"] for c in pipeline.fuse(sim, kw, 6, 0.25)]
     assert out[0] == "similar 1"                               # found by both: first
-    assert out[1:4] == ["similar 0", "similar 2", "similar 3"]  # best similarity results kept
-    assert out[4:] == ["keyword 0", "keyword 1"]               # at most two keyword-only additions
+    assert out[1:6] == ["similar 0", "similar 2", "similar 3", "similar 4", "similar 5"]
+    assert out[6:] == ["keyword 0", "keyword 1"]               # added after them, at most two
     few = [{"text": "only one", "score": 0.5}, {"text": "too weak", "score": 0.1}]
     out = [c["text"] for c in pipeline.fuse(few, kw[:4], 6, 0.25)]
     assert out == ["only one", "keyword 0", "keyword 1", "keyword 2", "keyword 3"]
+
+
+def test_many_passages_found_by_both_still_leave_room_for_the_best_match():
+    sim = [{"text": f"similar {i}", "score": 0.9 - i / 100} for i in range(12)]
+    kw = [{"text": f"similar {i}", "score": None} for i in range(1, 9)]
+    out = [c["text"] for c in pipeline.fuse(sim, kw, 6, 0.25)]
+    assert out == ["similar 1", "similar 2", "similar 3", "similar 4", "similar 5", "similar 0"]
 
 
 def test_prepare_uses_keyword_search_when_the_corpus_has_it(ollama):

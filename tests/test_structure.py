@@ -483,6 +483,17 @@ def test_one_named_document_puts_passages_both_searches_found_first(ollama):
     assert [c["chunk_id"] for c in p.chunks] == [8, 9, 10, 0, 1, 2]
 
 
+def test_agreement_deeper_in_the_lists_comes_first_and_keyword_passages_are_added(ollama):
+    # Similarity ranks the passages in order. Keyword search finds 14 (15th by
+    # meaning) first, then 18 and 19, which similarity ranks lower still.
+    corpus = WordCorpus({"a.pdf": [("", f"Meadow passage {i}.") for i in range(20)]},
+                        {"a.pdf": "Lattice Routing for Quiet Meadows"}, {"a.pdf": [14, 18, 19]})
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3",
+                         "Which watering schedule gave the tallest seedlings?", [],
+                         lambda v, n: corpus.search(v, n), corpus=corpus)
+    assert [c["chunk_id"] for c in p.chunks] == [14, 0, 1, 2, 3, 4, 18, 19]
+
+
 def test_compared_documents_are_each_searched_by_meaning_first(ollama):
     corpus = _meadows_and_harbor()
     p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3",

@@ -308,9 +308,12 @@ MAX_KEYWORD_ONLY = 2    # passages that keyword search may add to the similarity
 
 def fuse(similar: list[dict], keyword: list[dict], top_k: int, min_score: float) -> list[dict]:
     """Combine similarity and keyword results. Similarity results stay the basis:
-    passages found by both searches come first, then the best similarity-only
-    ones, and keyword search adds at most MAX_KEYWORD_ONLY passages that the
-    similarity search missed (more only if similarity found too few)."""
+    `top_k` of them, those keyword search found too first, and never without
+    the best one. Keyword search then adds at most MAX_KEYWORD_ONLY passages
+    that the similarity search missed (more only if similarity found too few).
+    It adds them rather than taking the places of similarity results: the
+    passage that answers a question can be found by meaning alone, while
+    keyword search finds others that only share its words."""
     ranked = [r for r in sorted(similar, key=lambda r: r["score"], reverse=True)
               if r["score"] >= min_score]
     found = {r["text"] for r in ranked}
@@ -318,12 +321,10 @@ def fuse(similar: list[dict], keyword: list[dict], top_k: int, min_score: float)
     both = [r for r in ranked if r["text"] in words]
     similar_only = [r for r in ranked if r["text"] not in words]
     keyword_only = [r for r in keyword if r["text"] not in found]
-    chosen = both[:top_k]
-    room = top_k - len(chosen)
-    extra = min(MAX_KEYWORD_ONLY, len(keyword_only), room)
-    chosen += similar_only[:room - extra]
-    chosen += keyword_only[:top_k - len(chosen)]
-    return chosen
+    chosen = (both + similar_only)[:top_k]
+    if ranked and ranked[0] not in chosen:      # many agreed passages: keep the best match too
+        chosen[-1] = ranked[0]
+    return chosen + keyword_only[:max(MAX_KEYWORD_ONLY, top_k - len(chosen))]
 
 
 def fuse_within(similar: list[dict], keyword: list[dict], top_k: int, min_score: float,
@@ -1010,7 +1011,9 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
     top_k = settings.top_k + (BREADTH_EXTRA if breadth else 0)
     scopes = named or [None]
     each = top_k if len(scopes) == 1 else max(3, math.ceil((top_k + 2) / len(scopes)))
-    pool = each * (3 if breadth else 2 if hybrid else 1)
+    # Both searches look three times deeper than the passages kept: a passage
+    # ranked 15th by meaning and 4th by its words is one they agree on.
+    pool = each * (3 if breadth or hybrid else 1)
     embedded = {search_query: vector}
 
     def embed(text):

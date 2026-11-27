@@ -5,6 +5,13 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.8] - 2026-11-27
+
+### Fixed
+- Keyword search could take the place of a passage that matched the question's meaning: its two extra passages replaced the fifth and sixth similarity results, which sometimes held the answer. It now adds them after the six, so an answer can draw on up to eight passages.
+- A passage that keyword search ranked high but similarity search only 15th was missed, because the two searches were compared on their top 12 only. They are now compared on their top 18, so a question about which setup performed best finds the results, not only a table of timings.
+- An eBook watermark whose name wraps onto a second line ("From the Library of Jane", then "Doe" on the next line) left the second part of the name in the text. The whole name is now removed. If your eBooks carry such a watermark, click **Rebuild index** once to take it out of what is already indexed.
+
 ## [3.0.7] - 2026-11-27
 
 ### Fixed

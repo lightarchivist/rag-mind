@@ -59,22 +59,58 @@ _SPLIT_HEADING = re.compile(r"(\b[IVX]+\.\s+)([A-Z]) ([A-Z]{2,})\b")
 # The name: up to four words on one line (any spaces between them, no-break
 # spaces included). Letters of any language, and lowercase particles: "José
 # van der Berg".
-_LIBRARY_OF = re.compile(_FROM_LIBRARY + r"((?:[^\W\d_][\w'’.-]*)(?:[^\S\n]+[^\W\d_][\w'’.-]*){0,3})")
+_NAME_WORDS = r"(?:[^\W\d_][\w'’.-]*)(?:[^\S\n]+[^\W\d_][\w'’.-]*){0,3}"
+_LIBRARY_OF = re.compile(_FROM_LIBRARY + "(" + _NAME_WORDS + ")")
+# Some PDFs wrap the name: "From the Library of Jane", then "Doe" alone on the
+# next line. The words that start the line after a name that ends its line:
+_NEXT_LINE = re.compile(r"[^\S\n]*\n\s*(" + _NAME_WORDS + ")")
 WATERMARK_MIN = 10
+WRAPPED_SHARE = 0.9     # how often the same words must follow to be the rest of the name
 
 
 def _watermark_names(whole: str) -> list[str]:
     """Names that follow "From the Library of" on many pages, longest form first.
     Every common form is kept ("Jane Doe Chapter", "Jane Doe", "Jane"): removing
     them longest first takes the whole name off every page, whatever follows it
-    there (a running header such as "Chapter 10" on some pages only)."""
+    there (a running header such as "Chapter 10" on some pages only).
+    A wrapped name ("Jane" alone at the end of the line, "Doe" on the next) is
+    kept as one form with the line break in it ("Jane\nDoe"). Words count as
+    the rest of the name only when they start the next line nearly every time
+    that first word ends a line, and appear almost nowhere else: a running
+    header there varies from page to page, and body text repeats elsewhere."""
     counts = collections.Counter()
+    line_ends = collections.Counter()
+    wrapped = collections.Counter()
     for m in _LIBRARY_OF.finditer(whole):
         words = m.group(1).split()
         for k in range(1, len(words) + 1):
             counts[" ".join(words[:k])] += 1
+        if len(words) > 1:
+            continue                       # a name of two or more words is complete
+        nxt = _NEXT_LINE.match(whole, m.end())
+        if nxt or whole[m.end():].lstrip(" \t ").startswith("\n"):
+            line_ends[m.group(1)] += 1
+        if nxt:
+            rest = nxt.group(1).split()
+            for k in range(1, len(rest) + 1):
+                wrapped[(m.group(1), " ".join(rest[:k]))] += 1
     names = [n for n, c in counts.items() if c >= WATERMARK_MIN]
+    names += [f"{name}\n{rest}" for (name, rest), c in wrapped.items()
+              if c >= WATERMARK_MIN and c >= WRAPPED_SHARE * line_ends[name]
+              and _occurrences(rest, whole) <= c + max(2, c // 10)]
     return sorted(names, key=len, reverse=True)
+
+
+def _occurrences(words: str, whole: str) -> int:
+    """How often these words appear in the text. The rest of a wrapped name
+    appears almost only in the watermark; a header word ("Chapter") elsewhere too."""
+    return len(re.findall(r"(?<!\w)" + r"\s+".join(map(re.escape, words.split())) + r"(?!\w)", whole))
+
+
+def _owner_pattern(name: str) -> re.Pattern:
+    """The watermark with this name, words on one line apart from a wrap ("\n")."""
+    lines = [r"[^\S\n]+".join(map(re.escape, part.split())) for part in name.split("\n")]
+    return re.compile(_FROM_LIBRARY + r"[^\S\n]*\n\s*".join(lines) + r"(?:\s*ptg\d{6,})?")
 
 
 def repair(pages: Pages, report: dict | None = None) -> Pages:
@@ -86,8 +122,7 @@ def repair(pages: Pages, report: dict | None = None) -> Pages:
     fix_s = broken >= BROKEN_S_MIN and broken >= 0.5 * whole.count("s")
     joinable = _split_word_test(whole)
     join_capitals = sum(1 for m in _SPLIT_CAPITAL.finditer(whole) if joinable(m)) >= SPLIT_CAPITAL_MIN
-    owners = [re.compile(_FROM_LIBRARY + r"[^\S\n]+".join(map(re.escape, n.split())) + r"(?:\s*ptg\d{6,})?")
-              for n in _watermark_names(whole)]
+    owners = [_owner_pattern(n) for n in _watermark_names(whole)]
     counts = {"watermarks": 0, "stamps": 0, "ligatures": 0, "split_words": 0}
     out = []
     for page, text in pages:
