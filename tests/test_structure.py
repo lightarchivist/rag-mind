@@ -64,9 +64,9 @@ def test_light_stemming_joins_word_forms():
     assert stem("embedding") == stem("embedded") == stem("embed")
     assert stem("addresses") == stem("address")
     assert stem("ti-lfa") == "ti-lfa" and stem("ospfv3") == "ospfv3" and stem("status") == "status"
-    index = KeywordIndex(["The corpus was split into chunks of 512 tokens with an overlap of 50 tokens.",
+    index = KeywordIndex(["The seed archive was split into chunks of 300 seeds with an overlap of 40 seeds.",
                          "Unrelated text about meadows.", "More unrelated text about relays."])
-    assert [i for i, _ in index.search("How was the knowledge base chunked and what overlap?", 3)] == [0]
+    assert [i for i, _ in index.search("How was the seed archive chunked and what overlap?", 3)] == [0]
 
 
 TITLES = {
@@ -440,20 +440,60 @@ def test_names_stay_when_little_else_is_left():
         "How was the quiet meadows study set up?"
 
 
-def test_inside_a_named_document_keyword_matches_do_not_jump_the_queue():
+def test_compared_documents_keep_the_similarity_order():
     sim = [{"text": t, "score": s} for t, s in [("chunking", 0.80), ("settings", 0.78), ("other", 0.70)]]
     words = [{"text": "settings", "score": None}, {"text": "glossary", "score": None},
              {"text": "index", "score": None}]
     assert [r["text"] for r in pipeline.fuse_within(sim, words, 2, 0.25)] == ["chunking", "settings", "glossary", "index"]
     assert [r["text"] for r in pipeline.fuse_within(sim, words, 2, 0.25, extra=1)] == ["chunking", "settings", "glossary"]
     assert [r["text"] for r in pipeline.fuse_within(sim[:1], words, 3, 0.25, extra=0)] == ["chunking", "settings", "glossary"]
-    # Across the library, keyword matches still come first (unchanged).
+    # Across the library and in one named document, passages both searches found come first.
     assert [r["text"] for r in pipeline.fuse(sim, words, 2, 0.25)][0] == "settings"
+
+
+class WordCorpus(Corpus):
+    """A Corpus whose keyword search finds the given chunks, best first."""
+
+    def __init__(self, docs, titles, words):
+        super().__init__(docs, titles)
+        self.words = words
+
+    def keyword_search(self, query, n, key=None):
+        keys = [key] if key else list(self.docs)
+        return [self._row(k, i) for k in keys for i in self.words.get(k, [])][:n]
+
+
+def _meadows_and_harbor():
+    # Similarity ranks passages in order (0 best); keyword search finds 9, 10
+    # and 8, all of them past the similarity top 6.
+    return WordCorpus({"a.pdf": [("", f"Meadow passage {i}.") for i in range(12)],
+                       "b.pdf": [("", f"Harbor passage {i}.") for i in range(12)]},
+                      {"a.pdf": "Lattice Routing for Quiet Meadows", "b.pdf": "Harbor Security Notes"},
+                      {"a.pdf": [9, 10, 8], "b.pdf": [9, 10, 8]})
+
+
+def test_one_named_document_puts_passages_both_searches_found_first(ollama):
+    # "How was X split, and which settings…": the passage on one part can rank
+    # low by meaning. Found by both searches, it comes first, as across the library.
+    corpus = _meadows_and_harbor()
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3",
+                         "How was the seed archive split, and which watering settings did the "
+                         "quiet meadows system use?", [], lambda v, n: corpus.search(v, n), corpus=corpus)
+    assert {c["source"] for c in p.chunks} == {"a.pdf"}
+    assert [c["chunk_id"] for c in p.chunks] == [8, 9, 10, 0, 1, 2]
+
+
+def test_compared_documents_are_each_searched_by_meaning_first(ollama):
+    corpus = _meadows_and_harbor()
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(), "llama3",
+                         "How do the quiet meadows paper and the harbor paper differ in watering?",
+                         [], lambda v, n: corpus.search(v, n), corpus=corpus)
+    assert [c["chunk_id"] for c in p.chunks if c["source"] == "a.pdf"] == [0, 1, 2, 3, 9]
 
 
 def test_one_named_document_is_searched_with_the_question_as_asked(ollama):
     from fake_ollama import fake_vector
-    corpus = Corpus({"a.pdf": [("2. Method", "The corpus was split into chunks of 512 tokens.")],
+    corpus = Corpus({"a.pdf": [("2. Method", "The seed archive was split into trays of 300 seeds.")],
                      "b.pdf": [("", "Other.")]},
                     {"a.pdf": "Lattice Routing for Quiet Meadows", "b.pdf": "Harbor Security Notes"})
     used = []
@@ -463,7 +503,7 @@ def test_one_named_document_is_searched_with_the_question_as_asked(ollama):
         used.append((key, [round(x, 6) for x in vector]))
         return real_search(vector, n, key)
     corpus.search = search
-    q = "How was the knowledge base chunked, and which retrieval settings did the quiet meadows system use?"
+    q = "How was the seed archive split, and which watering settings did the quiet meadows system use?"
     p = pipeline.prepare(OllamaClient(ollama.url), Settings(keyword_search=False), "llama3", q, [],
                          lambda v, n: corpus.search(v, n), corpus=corpus)
     assert {c["source"] for c in p.chunks} == {"a.pdf"}

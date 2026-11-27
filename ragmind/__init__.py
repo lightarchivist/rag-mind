@@ -11,4 +11,4 @@
 prompt building and the retrieval pipeline. Storage lives with each front end
 (ChromaDB in the CLI, a numpy index in the web app)."""
 
-__version__ = "3.0.6"
+__version__ = "3.0.7"

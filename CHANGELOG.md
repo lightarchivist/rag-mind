@@ -5,15 +5,20 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.7] - 2026-11-27
+
+### Fixed
+- A two-part question about one named document ("How was X split, and which settings did the Y system use?") could miss the passage on one of its parts. Inside one named document, passages found by both similarity and keyword search come first again, as in 3.0.3 and as across the whole library. The order by meaning from 3.0.5 now applies only to questions that compare documents.
+
 ## [3.0.6] - 2026-11-27
 
 ### Fixed
-- A question that names one document is searched with its wording as asked again, the document's name included. Without the name, "How was the knowledge base chunked, and which retrieval settings did the digital human system use?" missed the passage on chunking: passages are embedded with their document's title and section, and the name's words help find the right one. Only a question that compares documents leaves out names, and then only the other documents' names when searching each one.
+- A question that names one document is searched with its wording as asked again, the document's name included: passages are embedded with their document's title and section, and the name's words help find the right one. Only a question that compares documents leaves out names, and then only the other documents' names when searching each one.
 
 ## [3.0.5] - 2026-11-27
 
 ### Fixed
-- "How was the design-education study set up?" was searched as "How was set up?" once the document's name was taken out. The name now stays when too little of the question is left without it.
+- A short question about a named document ("How was the X study set up?") was searched as "How was set up?" once the document's name was taken out. The name now stays when too little of the question is left without it.
 - Inside a named document, passages that matched the question's words were put before those that matched its meaning, so for "How was X chunked, and which retrieval settings…" the settings passages pushed out the one on chunking. Inside a named document the order now follows meaning, and word matches are added after.
 - "Explain the second step" is now read from the list in the previous answer ("the second step" → its second item), instead of depending on the model to rewrite it. The model only rewrites follow-ups that this doesn't cover.
 

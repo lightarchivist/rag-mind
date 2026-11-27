@@ -135,7 +135,7 @@ def _refers_within(text: str, match) -> bool:
 def looks_like_followup(question: str, one_document: bool = False) -> bool:
     """Does the question lean on the conversation? Only such questions are
     rewritten before searching and shown the earlier conversation; a complete
-    question ("How does the round-table protocol resolve conflicts?") is
+    question ("How does the relay protocol resolve conflicts?") is
     searched as asked and answered from the documents alone. With the chat
     limited to `one_document`, a short question ("What are the main
     limitations?") is about that document, not about the last answer."""
@@ -328,11 +328,12 @@ def fuse(similar: list[dict], keyword: list[dict], top_k: int, min_score: float)
 
 def fuse_within(similar: list[dict], keyword: list[dict], top_k: int, min_score: float,
                 extra: int = MAX_KEYWORD_ONLY) -> list[dict]:
-    """Like fuse, for a search inside one named document: the similarity order
-    stays as it is, and keyword search adds up to `extra` passages that the
-    similarity search missed, after them. (Inside one document, putting keyword
-    matches first lets one part of "How was X chunked, and which settings…"
-    push out the passage on the other part.)"""
+    """For a question that compares named documents, each searched on its own:
+    the best `top_k` similarity results in their order, then up to `extra`
+    passages that only keyword search found. A question about the library or
+    about one document uses fuse instead, where passages found by both
+    searches come first: that keeps the passages on both parts of "How was X
+    split, and which settings…"."""
     ranked = [r for r in sorted(similar, key=lambda r: r["score"], reverse=True)
               if r["score"] >= min_score][:top_k]
     found = {r["text"] for r in ranked}
@@ -781,8 +782,8 @@ _NOT_NAMING = {"whole", "entire", "proposed", "same", "other", "first", "second"
                "every", "your", "my", "our", "its", "their", "this", "that", "these", "those",
                "current", "indexed", "uploaded", "given", "following", "main", "overall", "full",
                "cited", "related"}
-MAX_NAMED = 4
-MIN_TOPIC_WORDS = 3     # content words a question needs without the names, to search by them           # a phrase matching more documents than this doesn't name one
+MAX_NAMED = 4           # a phrase matching more documents than this doesn't name one
+MIN_TOPIC_WORDS = 3     # content words a question needs without the names, to search by them
 
 
 def _name_words(text: str) -> set[str]:
@@ -835,10 +836,10 @@ def documents_named(question: str, titles: dict[str, str]) -> list[str]:
 
 def without_names(question: str, titles: dict[str, str], keep: str | None = None) -> str:
     """The question with the names of documents taken out, all of them or all
-    but `keep`'s. Searching one document for "the digital humans paper and the
-    Trust-Aware paper … hallucinations" finds its passages that mention trust,
-    not the ones about hallucinations; its own name stays, since its passages
-    are embedded with its title."""
+    but `keep`'s. Searching one document for "the meadows paper and the harbor
+    paper … calibration" finds its passages that mention harbors, not the ones
+    about calibration; its own name stays, since its passages are embedded
+    with its title."""
     spans = sorted({span for span, keys in _named(question, titles) if keep is None or keep not in keys})
     if not spans:
         return question
@@ -850,7 +851,7 @@ def without_names(question: str, titles: dict[str, str], keep: str | None = None
     parts.append(question[last:])
     topic = " ".join("".join(parts).split())
     # Keep the question as it is if the name was most of it: "How was the
-    # design-education study set up?" leaves "How was set up?".
+    # quiet meadows study set up?" leaves "How was set up?".
     from .keyword import STOPWORDS
     content = {w for w in re.findall(r"[^\W\d_]{3,}", topic.lower()) if w not in STOPWORDS}
     return topic if len(content) >= MIN_TOPIC_WORDS else question
@@ -1062,11 +1063,10 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
         want = each * 2 if breadth else each
         if not hybrid:
             found = select(results, want, settings.min_score)
-        elif key is None:
+        elif len(scopes) == 1:
             found = fuse(results, words, want, settings.min_score)
         else:
-            found = fuse_within(results, words, want, settings.min_score,
-                                MAX_KEYWORD_ONLY if len(scopes) == 1 else 1)
+            found = fuse_within(results, words, want, settings.min_score, 1)
         if breadth:
             found = spread(found, each)
         if answer_vector is not None:
