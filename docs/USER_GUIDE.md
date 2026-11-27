@@ -202,10 +202,11 @@ two from each, and the answer names the sections.
 
 **Follow-up questions** work: after "Which model performed best?", you can ask
 "And how did the smallest model compare?" or "Explain the second step in more
-detail". RagMind rewrites the follow-up into a complete question before
-searching, also looks for the passages the previous answer was based on, and
-shows the rewritten question under the answer as *searched for: …*. If that line shows a misunderstanding, ask the full question
-instead.
+detail". RagMind rewrites the follow-up into a complete question, searches for
+it, also looks for the passages the previous answer was based on, and gives the
+model both your question and the rewritten one. The rewritten question is shown
+under the answer as *searched for: …*. If that line shows a misunderstanding,
+ask the full question instead.
 
 **"Not found" answers.** If you're sure the information is there, try the
 document's own wording (for example "hello messages" rather than "discovery"),

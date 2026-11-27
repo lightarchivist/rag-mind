@@ -719,9 +719,9 @@ def _name_words(text: str) -> set[str]:
     return {stem(w) for w in re.findall(r"[a-z0-9]+", text.lower())}
 
 
-def _phrases(question: str) -> list[tuple[set[str], bool]]:
-    """(name words, plural) for each name in the question. "the SDN and
-    hierarchical papers" gives two names, each naming one document."""
+def _phrases(question: str) -> list[tuple[set[str], bool, tuple[int, int]]]:
+    """(name words, plural, span in the question) for each name in the question.
+    "the SDN and hierarchical papers" gives two names, each naming one document."""
     from .keyword import stem
     out = []
     for pattern, words_at, noun_at in ((_NAMED_BEFORE, 1, 2), (_NAMED_AFTER, 2, 1)):
@@ -733,26 +733,52 @@ def _phrases(question: str) -> list[tuple[set[str], bool]]:
             for part in parts:
                 words = {stem(w) for w in re.findall(r"[a-z0-9]+", part.lower()) if w not in _NOT_NAMING}
                 if words:
-                    out.append((words, plural and len(parts) == 1))
+                    out.append((words, plural and len(parts) == 1, m.span()))
+    return out
+
+
+def _named(question: str, titles: dict[str, str]) -> list[tuple[tuple[int, int], list[str]]]:
+    """(span of the name in the question, documents it names) for each name that
+    picks out documents. `titles` is {document key: title}; a document's name is
+    its title plus its file name. A phrase picks the documents whose names
+    contain all its words: one document, or several for a plural ("the RAG papers")."""
+    if len(titles) < 2:
+        return []
+    names = {k: _name_words(f"{t} {os.path.splitext(os.path.basename(k))[0]}") for k, t in titles.items()}
+    out = []
+    for phrase, plural, span in _phrases(question):
+        matching = [k for k, words in names.items() if phrase <= words]
+        # "the RAG papers" may name several; "the cert guide" in a shelf of cert guides names none.
+        if matching and len(matching) <= (MAX_NAMED if plural else 1):
+            out.append((span, matching))
     return out
 
 
 def documents_named(question: str, titles: dict[str, str]) -> list[str]:
-    """The documents a question names, in the order it names them. `titles` is
-    {document key: title}; a document's name is its title plus its file name.
-    A phrase picks the documents whose names contain all its words: one
-    document, or several for a plural ("the RAG papers")."""
-    if len(titles) < 2:
-        return []
-    names = {k: _name_words(f"{t} {os.path.splitext(os.path.basename(k))[0]}") for k, t in titles.items()}
+    """The documents a question names, in the order it names them."""
     found = []
-    for phrase, plural in _phrases(question):
-        matching = [k for k, words in names.items() if phrase <= words]
-        # "the RAG papers" may name several; "the cert guide" in a shelf of cert guides names none.
-        if not matching or len(matching) > (MAX_NAMED if plural else 1):
-            continue
-        found += [k for k in matching if k not in found]
+    for _, keys in _named(question, titles):
+        found += [k for k in keys if k not in found]
     return found
+
+
+def without_names(question: str, titles: dict[str, str]) -> str:
+    """The question with the names of documents taken out: what to look for
+    inside those documents. Searching one document for "the digital humans
+    paper and the Trust-Aware paper … hallucinations" finds the passages that
+    mention trust and digital humans, not the ones about hallucinations."""
+    spans = sorted({span for span, _ in _named(question, titles)})
+    if not spans:
+        return question
+    parts, last = [], 0
+    for start, end in spans:
+        if start >= last:
+            parts.append(question[last:start])
+            last = end
+    parts.append(question[last:])
+    topic = " ".join("".join(parts).split())
+    # Keep the question as it is if hardly anything is left ("Summarise the SDN paper").
+    return topic if len(re.findall(r"[^\W\d_]{3,}", topic)) >= 3 else question
 
 
 def title_page_chunks(corpus, key) -> list[dict]:
@@ -898,22 +924,29 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
                     ". Passages marked 'abstract' or 'conclusion' state each document's own findings. "
                     "Cover each document separately, then compare them if asked.")
         text, used, turns = P.build_prompt(question, chunks, history, num_ctx,
-                                           settings.answer_reserve, settings.history_turns, note=note)
+                                           settings.answer_reserve, settings.history_turns, note=note,
+                                           resolved=search_query)
         return Prepared(text, used, search_query, num_ctx, turns, broad=len(names) > 1)
 
     hybrid = settings.keyword_search and corpus is not None and hasattr(corpus, "keyword_search")
     breadth = asks_for_breadth(question)
     top_k = settings.top_k + (BREADTH_EXTRA if breadth else 0)
     scopes = named or [None]
-    each = top_k if len(scopes) == 1 else max(3, math.ceil(top_k / len(scopes)))
+    each = top_k if len(scopes) == 1 else max(3, math.ceil((top_k + 2) / len(scopes)))
     pool = each * (3 if breadth else 2 if hybrid else 1)
-    vectors = [vector] + ([embed_query(client, settings, question)] if search_query != question else [])
+    # Within named documents, search for the topic without the documents' names.
+    query, original = search_query, question
+    if named:
+        query, original = without_names(search_query, titles), without_names(question, titles)
+        if query != search_query:
+            vector = embed_query(client, settings, query)
+    vectors = [vector] + ([embed_query(client, settings, original)] if original != query else [])
     # A follow-up ("explain the second step") is about what the last answer said:
     # passages close to that answer are searched for as well.
     answer_vector = None
     if history and not _NOT_FOUND.match(history[-1]["a"]):
         answer_vector = embed_query(client, settings, f"{history[-1]['a'][:1500]}\n{question}")
-    keyword_query = question if search_query == question else f"{search_query} {question}"
+    keyword_query = original if query == original else f"{query} {original}"
 
     def similar(vec, n, key):
         return search(vec, n) if key is None else corpus.search(vec, n, key)
@@ -977,7 +1010,7 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
                      "sections, named in their labels; say which sections cover it.")
     text, used, turns = P.build_prompt(question, chunks, history, num_ctx,
                                        settings.answer_reserve, settings.history_turns,
-                                       note="\n".join(notes))
+                                       note="\n".join(notes), resolved=search_query)
     return Prepared(text, used, search_query, num_ctx, turns)
 
 

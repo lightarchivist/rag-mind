@@ -93,11 +93,15 @@ def _turn(h: dict) -> str:
 
 def build_prompt(question: str, chunks: list[dict], history: list[dict],
                  ctx_tokens: int, answer_reserve: int = 1024, history_turns: int = 4,
-                 note: str = ""):
+                 note: str = "", resolved: str = ""):
     """Return (prompt, chunks_used, turns_used) fitting in ctx_tokens - answer_reserve.
-    `note` is an extra line placed just above the passages."""
+    `note` is an extra line placed just above the passages. `resolved` is a
+    follow-up question rewritten in full ("the second step" → "the step of
+    adjusting confidence"), so the answer explains what was searched for."""
     budget = max(ctx_tokens - answer_reserve, 256)
     tail = f"User: {question}\nAssistant:"
+    if resolved and resolved.strip() != question.strip():
+        tail = f"User: {question}\n(With the conversation so far, this asks: {resolved})\nAssistant:"
     used = (estimate_tokens(SYSTEM) + estimate_tokens(tail) + estimate_tokens(note)
             + estimate_tokens(documents_note(chunks)) + 40)
 

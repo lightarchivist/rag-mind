@@ -5,6 +5,13 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.4] - 2026-11-27
+
+### Fixed
+- A question that names documents searches each of them for its topic, without the names. Comparing two papers' safeguards against hallucinations found the passages of one paper that mention the other paper's name, not its safeguards.
+- A question that names two documents gets four passages from each, up from three.
+- "Explain the second step in more detail" could be answered about the second item of a different list. A rewritten follow-up is now given to the model next to the question as asked, so the answer is about what was searched for.
+
 ## [3.0.3] - 2026-11-27
 
 ### Fixed

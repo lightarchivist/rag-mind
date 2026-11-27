@@ -349,3 +349,41 @@ def test_ligatures_are_removed_from_titles():
 ])
 def test_pointing_words_only_count_when_they_point_back(question, followup):
     assert pipeline.looks_like_followup(question) is followup
+
+
+# ── 3.0.4: searching inside named documents; follow-ups read in full ──────────
+
+def test_names_are_taken_out_of_searches_inside_named_documents():
+    titles = {"brightwater-2031.pdf": "Lattice Routing for Quiet Meadows",
+              "fenwick.pdf": "Trust-Weighted Lattice Agents: A Hybrid Framework for Calm Networks"}
+    q = "How do the quiet meadows paper and the Trust-Weighted paper differ in how they guard against drift?"
+    assert pipeline.without_names(q, titles) == "How do and differ in how they guard against drift?"
+    assert pipeline.without_names("What gain did the quiet meadows study use?", titles) == "What gain did use?"
+    # Too little left: search with the question as it is.
+    assert pipeline.without_names("Who wrote the Trust-Weighted paper?", titles) == "Who wrote the Trust-Weighted paper?"
+    assert pipeline.without_names("What does TI-LFA provide?", titles) == "What does TI-LFA provide?"
+
+
+def test_comparisons_search_each_document_for_the_topic_only(ollama):
+    corpus = Corpus({"a.pdf": [("", f"Meadow fact {i}.") for i in range(10)],
+                     "b.pdf": [("", f"Harbor fact {i}.") for i in range(10)],
+                     "c.pdf": [("", f"Orchard fact {i}.") for i in range(10)]},
+                    {"a.pdf": "Lattice Routing for Quiet Meadows", "b.pdf": "Harbor Security Notes",
+                     "c.pdf": "Orchard Notes"})
+    before = len(ollama.calls("/api/embed"))
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(keyword_search=False), "llama3",
+                         "How do the quiet meadows paper and the harbor paper differ in how they guard against drift?",
+                         [], lambda v, n: corpus.search(v, n), corpus=corpus)
+    searched = [str(b.get("input")) for b in ollama.calls("/api/embed")[before:]]
+    assert any("guard against drift" in s and "meadows" not in s and "harbor" not in s for s in searched)
+    sources = [c["source"] for c in p.chunks]
+    assert sources.count("a.pdf") == sources.count("b.pdf") == 4      # (6 + 2) / 2 each
+
+
+def test_a_rewritten_follow_up_is_shown_to_the_model_in_full():
+    prompt, _, _ = build_prompt("Explain the second step", [], [], 8192,
+                                resolved="Explain the step of adjusting confidence levels")
+    assert prompt.endswith("User: Explain the second step\n(With the conversation so far, this asks: "
+                           "Explain the step of adjusting confidence levels)\nAssistant:")
+    plain, _, _ = build_prompt("What is LDP?", [], [], 8192, resolved="What is LDP?")
+    assert plain.endswith("User: What is LDP?\nAssistant:")
