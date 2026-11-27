@@ -833,12 +833,13 @@ def documents_named(question: str, titles: dict[str, str]) -> list[str]:
     return found
 
 
-def without_names(question: str, titles: dict[str, str]) -> str:
-    """The question with the names of documents taken out: what to look for
-    inside those documents. Searching one document for "the digital humans
-    paper and the Trust-Aware paper … hallucinations" finds the passages that
-    mention trust and digital humans, not the ones about hallucinations."""
-    spans = sorted({span for span, _ in _named(question, titles)})
+def without_names(question: str, titles: dict[str, str], keep: str | None = None) -> str:
+    """The question with the names of documents taken out, all of them or all
+    but `keep`'s. Searching one document for "the digital humans paper and the
+    Trust-Aware paper … hallucinations" finds its passages that mention trust,
+    not the ones about hallucinations; its own name stays, since its passages
+    are embedded with its title."""
+    spans = sorted({span for span, keys in _named(question, titles) if keep is None or keep not in keys})
     if not spans:
         return question
     parts, last = [], 0
@@ -1009,24 +1010,33 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
     scopes = named or [None]
     each = top_k if len(scopes) == 1 else max(3, math.ceil((top_k + 2) / len(scopes)))
     pool = each * (3 if breadth else 2 if hybrid else 1)
-    # Within named documents, search for the topic without the documents' names.
-    query, original = search_query, question
-    if named:
-        query, original = without_names(search_query, titles), without_names(question, titles)
-        if query != search_query:
-            vector = embed_query(client, settings, query)
-    vectors = [vector] + ([embed_query(client, settings, original)] if original != query else [])
+    embedded = {search_query: vector}
+
+    def embed(text):
+        if text not in embedded:
+            embedded[text] = embed_query(client, settings, text)
+        return embedded[text]
+
+    def queries(key):
+        """(vectors, keyword query) to search the library (key None) or one
+        document. When the question compares documents, each is searched with
+        the question without the others' names."""
+        query, original = search_query, question
+        if key is not None and len(scopes) > 1:
+            query = without_names(search_query, titles, keep=key)
+            original = without_names(question, titles, keep=key)
+        # A rewrite can drift from what was asked: search with the original wording too.
+        vectors = [embed(query)] + ([embed(original)] if original != query else [])
+        return vectors, (original if query == original else f"{query} {original}")
     # A follow-up ("explain the second step") is about what the last answer said:
     # passages close to that answer are searched for as well.
     answer_vector = None
     if history and not _NOT_FOUND.match(history[-1]["a"]):
         answer_vector = embed_query(client, settings, f"{history[-1]['a'][:1500]}\n{question}")
-    keyword_query = original if query == original else f"{query} {original}"
-
     def similar(vec, n, key):
         return search(vec, n) if key is None else corpus.search(vec, n, key)
 
-    def keyword(n, key):
+    def keyword(n, key, keyword_query):
         if not hybrid:
             return []
         if key is None:
@@ -1045,10 +1055,9 @@ def prepare(client: OllamaClient, settings: Settings, model: str, question: str,
 
     groups, first_results = [], []
     for key in scopes:
-        # A rewrite can drift from what was asked; search with the original
-        # wording too and keep the best of both.
+        vectors, keyword_query = queries(key)
         results = outside_reference_lists(_merge_best(*(similar(v, pool, key) for v in vectors)))
-        words = outside_reference_lists(keyword(pool, key))
+        words = outside_reference_lists(keyword(pool, key, keyword_query))
         first_results += results
         want = each * 2 if breadth else each
         if not hybrid:

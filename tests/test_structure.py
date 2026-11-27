@@ -368,7 +368,7 @@ def test_names_are_taken_out_of_searches_inside_named_documents():
     assert pipeline.without_names("What does TI-LFA provide?", titles) == "What does TI-LFA provide?"
 
 
-def test_comparisons_search_each_document_for_the_topic_only(ollama):
+def test_comparisons_search_each_document_without_the_others_names(ollama):
     corpus = Corpus({"a.pdf": [("", f"Meadow fact {i}.") for i in range(10)],
                      "b.pdf": [("", f"Harbor fact {i}.") for i in range(10)],
                      "c.pdf": [("", f"Orchard fact {i}.") for i in range(10)]},
@@ -379,7 +379,9 @@ def test_comparisons_search_each_document_for_the_topic_only(ollama):
                          "How do the quiet meadows paper and the harbor paper differ in how they guard against drift?",
                          [], lambda v, n: corpus.search(v, n), corpus=corpus)
     searched = [str(b.get("input")) for b in ollama.calls("/api/embed")[before:]]
-    assert any("guard against drift" in s and "meadows" not in s and "harbor" not in s for s in searched)
+    # Each document is searched with its own name and without the other's.
+    assert any("quiet meadows paper" in s and "harbor" not in s and "guard against drift" in s for s in searched)
+    assert any("harbor paper" in s and "meadows" not in s and "guard against drift" in s for s in searched)
     sources = [c["source"] for c in p.chunks]
     assert sources.count("a.pdf") == sources.count("b.pdf") == 4      # (6 + 2) / 2 each
 
@@ -447,3 +449,23 @@ def test_inside_a_named_document_keyword_matches_do_not_jump_the_queue():
     assert [r["text"] for r in pipeline.fuse_within(sim[:1], words, 3, 0.25, extra=0)] == ["chunking", "settings", "glossary"]
     # Across the library, keyword matches still come first (unchanged).
     assert [r["text"] for r in pipeline.fuse(sim, words, 2, 0.25)][0] == "settings"
+
+
+def test_one_named_document_is_searched_with_the_question_as_asked(ollama):
+    from fake_ollama import fake_vector
+    corpus = Corpus({"a.pdf": [("2. Method", "The corpus was split into chunks of 512 tokens.")],
+                     "b.pdf": [("", "Other.")]},
+                    {"a.pdf": "Lattice Routing for Quiet Meadows", "b.pdf": "Harbor Security Notes"})
+    used = []
+    real_search = corpus.search
+
+    def search(vector, n, key=None):
+        used.append((key, [round(x, 6) for x in vector]))
+        return real_search(vector, n, key)
+    corpus.search = search
+    q = "How was the knowledge base chunked, and which retrieval settings did the quiet meadows system use?"
+    p = pipeline.prepare(OllamaClient(ollama.url), Settings(keyword_search=False), "llama3", q, [],
+                         lambda v, n: corpus.search(v, n), corpus=corpus)
+    assert {c["source"] for c in p.chunks} == {"a.pdf"}
+    # Searched with the question as asked, the document's name included.
+    assert used and all(key == "a.pdf" and vec == [round(x, 6) for x in fake_vector(q)] for key, vec in used)

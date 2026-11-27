@@ -5,6 +5,11 @@ All notable changes to RagMind. Newest first. Versions follow
 (for example rebuilding the index), MINOR for new features, PATCH for fixes.
 The web app shows the newest entry under **About**.
 
+## [3.0.6] - 2026-11-27
+
+### Fixed
+- A question that names one document is searched with its wording as asked again, the document's name included. Without the name, "How was the knowledge base chunked, and which retrieval settings did the digital human system use?" missed the passage on chunking: passages are embedded with their document's title and section, and the name's words help find the right one. Only a question that compares documents leaves out names, and then only the other documents' names when searching each one.
+
 ## [3.0.5] - 2026-11-27
 
 ### Fixed
